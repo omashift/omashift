@@ -1,6 +1,7 @@
 // Watches the engine's structured state file and exposes it as a parsed object.
 //
-// The engine writes /tmp/omashift-state.json on every screen change. That file
+// The engine writes state.json in the private runtime directory on every
+// screen change, and lib/runtime.lua is where that path is decided. That file
 // is the ENTIRE interface between the game and this display: nothing here talks
 // to Hyprland, reads a key, or knows what a submap is. Capture belongs to the
 // engine, which is why swapping the terminal display for this one changes
@@ -23,10 +24,27 @@ QtObject {
     /// Which screen the engine is showing. "" means nothing is running.
     readonly property string screen: doc.screen || ""
 
+    // $XDG_RUNTIME_DIR is 0700 and per user, so this file is not reachable by
+    // anybody who could abuse it. It used to be /tmp/omashift-state.json, which
+    // any local process could predict, pre-place, or replace. See
+    // lib/runtime.lua for the whole argument.
     property string statePath: {
         const env = Quickshell.env("OMASHIFT_STATE_JSON");
-        return (env && env.length > 0) ? env : "/tmp/omashift-state.json";
+        if (env && env.length > 0)
+            return env;
+        const run = Quickshell.env("XDG_RUNTIME_DIR");
+        return (run && run.length > 0)
+            ? run + "/omashift/state.json"
+            : "";
     }
+
+    /// The most a screen is ever allowed to be.
+    ///
+    /// FileView cannot stat: Quickshell exposes path, text, data and the watch
+    /// flags, and nothing that reports type, owner, or size. So the boundary is
+    /// the 0700 directory above, and this is the one check a reader can make on
+    /// its own. A state document is a screen; anything near this cap is not one.
+    readonly property int maxStateBytes: 262144
 
     /// How long the opening frame stays up, at minimum.
     ///
@@ -98,7 +116,13 @@ QtObject {
             // is expected traffic rather than an error. Keep the last good
             // document: a half-drawn frame is better than a blank screen.
             try {
-                const next = JSON.parse(text());
+                const raw = text();
+                // Refused rather than parsed. Keeping the last good document is
+                // already what this handler does on a bad parse, so an oversized
+                // one costs a frame and nothing else.
+                if (raw.length > root.maxStateBytes)
+                    return;
+                const next = JSON.parse(raw);
                 if (next && typeof next === "object") {
                     root._accept(next);
                 }

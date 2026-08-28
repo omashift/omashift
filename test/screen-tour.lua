@@ -38,8 +38,8 @@ local function boot()
   restore()
 
   -- Anything that reaches into the engine has to run under the overridden
-  -- environment, or the engine writes its screens to the real /tmp paths and the
-  -- tour silently describes a different run than the one being inspected.
+  -- environment, or the engine writes its screens to the real runtime paths and
+  -- the tour silently describes a different run than the one being inspected.
   local function under(fn)
     local r = H.with_env(env)
     local ok, err = pcall(fn)

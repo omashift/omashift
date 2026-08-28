@@ -227,9 +227,11 @@ Difficulty changes two things: how quick counts as quick, and how long the co-dr
 | `~/.local/state/omashift/trophies.json` | the Cabinet                                        |
 | `~/.config/omashift/config`             | the settings above                                 |
 | `~/.config/omashift/courses.lua`        | your own courses                                   |
-| `/tmp/omashift-state.json`              | the current screen, which is how the overlay draws |
+| `$XDG_RUNTIME_DIR/omashift/state.json`  | the current screen, which is how the overlay draws |
 
 All of it is plain text on your machine. Nothing is sent anywhere. Delete any of it and the game carries on with less to go on.
+
+The last one is the only file the game needs while it is running, and it is the only one that is not yours to keep: `$XDG_RUNTIME_DIR` is a private, owner-only directory that your login session owns, so the screen state is gone when you log out. It used to live at `/tmp/omashift-state.json`, where any other process on the machine could predict it, read it, or replace it underneath the overlay. If `$XDG_RUNTIME_DIR` is not set, which happens over plain ssh, the game falls back to a `0700` directory of its own and refuses to start rather than use one it cannot verify.
 
 ## Known issues
 

@@ -43,7 +43,31 @@
 
 set -uo pipefail
 
-REPORT="${OMASHIFT_GUIDE_REPORT:-/tmp/omashift-guide-guard.txt}"
+# Runs from two layouts, the same as omashift-guide-restore: bin/ in the repo,
+# and the staged copy at the top of $BASE. lib/ is one level up in the first
+# and one level down in the second, so probe rather than assume.
+HERE=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+for _lib in "$HERE/../lib" "$HERE/lib"; do
+  if [[ -r $_lib/runtime.sh ]]; then
+    # shellcheck source=../lib/runtime.sh
+    . "$_lib/runtime.sh"
+    break
+  fi
+done
+
+# The report is written by hyprctl eval and read back below. It carries the
+# cache contents of another plugin, so it is nobody else's business.
+if declare -F omashift_runtime_path >/dev/null; then
+  REPORT=$(omashift_runtime_path OMASHIFT_GUIDE_REPORT guide-guard.txt) || {
+    echo "omashift-guide-guard: no private runtime directory, refusing" >&2
+    exit 2
+  }
+else
+  # Missing helper is treated the same way a missing guard is: refuse. This
+  # script exists to avoid gambling the session, so it does not guess a path.
+  echo "omashift-guide-guard: lib/runtime.sh not found beside this script" >&2
+  exit 2
+fi
 DO_PRUNE=true
 QUIET=false
 
@@ -240,12 +264,15 @@ LUA
 
 hyprctl eval "dofile('$LUA')" >/dev/null 2>&1
 
-if [[ ! -r $REPORT ]]; then
+# A regular file we own, not a symlink, and small. Refusing here costs a hint
+# overlay; trusting a planted report is how the guard gets talked into calling
+# a toggle it exists to prevent.
+if ! REPORT_TEXT=$(omashift_safe_read "$REPORT" 65536); then
   warn "keybinding guide: guard could not run, leaving the overlay alone"
   exit 1
 fi
 
-field() { sed -n "s/^$1=//p" "$REPORT" | head -1; }
+field() { sed -n "s/^$1=//p" <<<"$REPORT_TEXT" | head -1; }
 
 if [[ $(field nonce) != "$NONCE" ]]; then
   warn "keybinding guide: guard report is stale, leaving the overlay alone"

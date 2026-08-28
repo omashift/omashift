@@ -17,13 +17,17 @@
 --     the game.
 
 local BASE = os.getenv("OMASHIFT_BASE") or (os.getenv("HOME") .. "/.local/share/omashift")
-local STATE = os.getenv("OMASHIFT_STATE") or "/tmp/omashift-state.txt"
+
+package.path = BASE .. "/lib/?.lua;" .. package.path
+-- Loaded before the state paths because it is the thing that resolves them.
+-- See lib/runtime.lua for why they are no longer in /tmp.
+local runtime = dofile(BASE .. "/lib/runtime.lua")
+local STATE = runtime.path("OMASHIFT_STATE", "state.txt")
 -- The same screen, structured. The terminal display reads STATE; a Quickshell
 -- overlay reads this. Written ALONGSIDE the text rather than replacing it, so
 -- the working display is untouched while the QML one is built against it.
-local STATE_JSON = os.getenv("OMASHIFT_STATE_JSON") or "/tmp/omashift-state.json"
+local STATE_JSON = runtime.path("OMASHIFT_STATE_JSON", "state.json")
 
-package.path = BASE .. "/lib/?.lua;" .. package.path
 local core = dofile(BASE .. "/lib/core.lua")
 -- Screens are a pure function of the model. See lib/screens.lua for the rule
 -- that keeps them that way.
@@ -300,14 +304,12 @@ local keys_down = {}
 -- cycling the course rewrites this file, and a keypress landing in that window
 -- found no screen at all. rename(2) is atomic on the same filesystem, so a
 -- reader sees either the old file or the new one and never a half of either.
-local function write_atomic(path, text)
-  local tmp = path .. ".tmp"
-  local f = io.open(tmp, "w")
-  if not f then return end
-  f:write(text)
-  f:close()
-  os.rename(tmp, path)
-end
+--
+-- THE STAGED NAME IS NO LONGER PREDICTABLE. It used to be a fixed <path>.tmp
+-- sibling, which in a world writable directory let anyone plant a symlink there
+-- and have the engine truncate a file of the player's through it. The write
+-- lives in lib/runtime.lua now, next to the reason.
+local write_atomic = runtime.write_atomic
 
 local function render(lines)
   write_atomic(STATE, table.concat(lines, "\n") .. "\n")

@@ -18,7 +18,19 @@ set -euo pipefail
 # lib/, which is exactly what installing it revealed.
 HERE=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
 BASE="${OMASHIFT_BASE:-$HOME/.local/share/omashift}"
-STATE="${OMASHIFT_STATE:-/tmp/omashift-state.txt}"
+
+# Where the running game keeps its files, and the only safe way to read them.
+# Sourced rather than reimplemented: the engine resolves the same paths through
+# lib/runtime.lua, and the two disagreeing is an overlay that watches a file
+# nothing writes.
+# shellcheck source=../lib/runtime.sh
+. "$HERE/lib/runtime.sh"
+
+STATE=$(omashift_runtime_path OMASHIFT_STATE state.txt) || {
+  echo "omashift: no private runtime directory, refusing to run" >&2
+  echo "  \$XDG_RUNTIME_DIR/omashift must be a directory you own, mode 700" >&2
+  exit 1
+}
 
 # EVERY LAUNCH LEAVES A LINE BEHIND.
 #
@@ -47,7 +59,7 @@ log_line() {
   fi
 }
 
-STATE_JSON="${OMASHIFT_STATE_JSON:-/tmp/omashift-state.json}"
+STATE_JSON=$(omashift_runtime_path OMASHIFT_STATE_JSON state.json) || exit 1
 
 GUIDE="$HOME/.config/omarchy/plugins/io.github.ctl0v0.keybinding-guide/bin/keybinding-guide-toggle"
 
@@ -286,7 +298,7 @@ stop_qml() {
   rm -f "$QML_PID"
   # The overlay hides when the document goes away, which is also what stops a
   # stale results page hanging over the desktop after --stop.
-  rm -f "${OMASHIFT_STATE_JSON:-/tmp/omashift-state.json}"
+  rm -f "$STATE_JSON"
 }
 
 # Fire an armed stage if there is a live one. Returns 1 if there was nothing to
@@ -616,7 +628,9 @@ if fire_if_armed; then exit 0; fi
 # nothing enforces it. A glob cannot be forgotten. inventory.lua is not in the
 # repo's lib/, so it is unaffected and is still generated below.
 mkdir -p "$BASE/lib"
-cp "$HERE"/lib/*.lua "$BASE/lib/"
+# Everything in lib/, not only the Lua: runtime.sh is sourced by the guard,
+# which runs from here rather than from the repo. Same argument as the glob.
+cp "$HERE"/lib/* "$BASE/lib/"
 # The engine hands control back on its own now, and restoring the overlay is
 # part of that, so the script has to be somewhere the engine can reach.
 cp "$HERE/bin/omashift-guide-restore" "$BASE/omashift-guide-restore"
