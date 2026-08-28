@@ -1216,6 +1216,24 @@ has_in "the launcher resolves state through the helper" "$L" \
 has_in "and refuses when the directory fails its checks" "$L" \
   'no private runtime directory'
 
+# THE OVERLAY TREATS THE DOCUMENT AS UNTRUSTED INPUT.
+#
+# The runtime directory shuts out another user and not another process of
+# yours, and nothing on a filesystem closes that. So the display stops trying
+# to prove who wrote the document and bounds what an unexpected one can do: a
+# screen the engine cannot produce is dropped whole, which keeps its other
+# fields from reaching anything downstream too.
+SR=../qml/StateReader.qml
+has_in "the overlay caps the read before parsing"   "$SR" 'raw.length > root.maxStateBytes'
+has_in "and rejects anything that is not an object" "$SR" 'typeof next !== "object"'
+has_in "and drops an unknown screen whole"          "$SR" 'root.knownScreens.indexOf'
+# The whitelist has to name every screen the engine can publish, or a real one
+# gets dropped and the overlay freezes on the screen before it.
+for s in loaded ready countdown prompt result results released cabinet stats empty_course; do
+  assert_eq "the whitelist knows the $s screen" 1 \
+    "$(grep -c "\"$s\"" <<<"$(sed -n '/knownScreens/,/]/p' "$SR")")"
+done
+
 # THE CLOCK COMES FROM WHOEVER OWNS THE TIMERS.
 #
 # Every deferral goes through hl.timer, so reading the clock from somewhere else
