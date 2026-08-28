@@ -1,0 +1,8 @@
+# Every change to this repository needs the owner to look at it.
+#
+# Combined with a branch rule requiring code owner review, this makes the
+# review a gate rather than a courtesy. On a pull request the owner opened
+# themselves GitHub will not request their own review, which is expected: the
+# author already decides whether it merges.
+
+* @jttraino
