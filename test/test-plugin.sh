@@ -168,4 +168,20 @@ done
 has_in "the README documents the plugin install" ../README.md "omarchy plugin add"
 has_in "and how to remove it again"              ../README.md "omarchy plugin remove"
 
+# A root preview is optional to the validator and most of the listing card, and
+# it must sit at the ROOT under one of these names. assets/ is not looked at.
+previews=$(cd .. && ls preview.png preview.jpg preview.jpeg preview.webp preview.avif 2>/dev/null | wc -l)
+assert_eq "exactly one root preview image"       1 "$previews"
+
+# 50 MB and 40 megapixels are the marketplace's limits on preview input. A
+# screenshot is nowhere near either; a mistakenly committed render could be.
+if [[ -f ../preview.png ]]; then
+  bytes=$(stat -c %s ../preview.png)
+  if (( bytes < 50000000 )); then
+    _pass "the preview is inside the 50 MB limit"
+  else
+    _fail "the preview is inside the 50 MB limit" "< 50000000 bytes" "$bytes"
+  fi
+fi
+
 suite_summary "plugin manifest"
