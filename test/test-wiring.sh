@@ -845,8 +845,13 @@ has_in "and the overlay splits on one"    ../qml/Cabinet.qml 'modelData.label.sp
 # put the thing being banned into the file that bans it, and two of them were
 # hiding inside Lua strings as a decimal escape triple, which no search for the
 # character itself would ever have found.
-dashes=$(grep -rc "$(printf '\xe2\x80\x94')\|$(printf '\xe2\x80\x93')\|226.128.14[68]" \
-  ../lib ../qml ../bin ../test ../assets ../install ../README.md ../docs 2>/dev/null \
+# -I SKIPS BINARY FILES, and it is load bearing. ../assets holds screenshots,
+# and a PNG's compressed bytes will eventually contain \xe2\x80\x94 by chance:
+# assets/screenshot-cabinet.png did, twice, and failed a rule about prose on a
+# file that has none. Nothing textual is skipped by -I, so the rule itself is
+# unchanged.
+dashes=$(grep -rIc "$(printf '\xe2\x80\x94')\|$(printf '\xe2\x80\x93')\|226.128.14[68]" \
+  ../lib ../qml ../bin ../test ../assets ../install ../README.md ../manifest.json ../docs 2>/dev/null \
   | awk -F: '{ n += $2 } END { print n + 0 }')
 assert_eq "no em dashes or en dashes anywhere in the tree" 0 "$dashes"
 
@@ -860,9 +865,9 @@ assert_eq "no em dashes or en dashes anywhere in the tree" 0 "$dashes"
 #
 # The needles carry a bracket so this line does not match itself. A spell check
 # that fails on its own definition is not a spell check.
-briticisms=$(grep -rn -io \
+briticisms=$(grep -rnI -io \
   "col[o]ur\|behavi[o]ur\|hon[o]ur\|rasteri[s]\|recogni[s]e\|cent[r]e\|licen[c]e\|artef[a]ct\|neighb[o]ur\|label[l]ed\|catalo[g]ue\|whil[s]t\|among[s]t\|fortnigh[t]" \
-  ../lib ../qml ../bin ../test ../assets ../install ../README.md ../docs 2>/dev/null | wc -l)
+  ../lib ../qml ../bin ../test ../assets ../install ../README.md ../manifest.json ../docs 2>/dev/null | wc -l)
 assert_eq "the public tree is in US English" 0 "$briticisms"
 
 # ATTRACT MODE. The front screen is the one place in the game where nothing is

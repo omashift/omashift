@@ -53,6 +53,51 @@ It also adds an entry to your app menu, so you can find Omashift without remembe
 
 Nothing else is written to your config, which is why uninstalling is `hyprctl reload` and deleting the clone.
 
+### As an Omarchy plugin
+
+On Omarchy 4 the same repo installs as a shell plugin, which adds an Omashift
+button to your bar:
+
+```bash
+omarchy plugin add https://github.com/omashift/omashift.git --enable
+omarchy plugin update io.github.omashift.omashift   # later, to upgrade
+```
+
+There is no release to download and no package to build. The plugin system
+clones the default branch and fast forwards it on update, so the tip of `main`
+is what you get.
+
+**Left click opens Omashift. Right click retires a stage.** One click cannot
+take your keyboard: `omashift` on its own arms a stage and draws the menu, and
+the stage starts only when you ask a second time. So a stray click costs you a
+menu, never your keyboard. A second, deliberate click does start the stage,
+exactly as pressing the launch chord twice does, and clicks inside the first
+one's two and a half second startup are ignored so a double click cannot stage
+the game twice.
+
+Adding the plugin does not run `./install`, so it gives you the button and
+nothing else. If you also want the `omashift` commands on your `PATH`, the app
+menu entry and the launch chord, run `./install` from the plugin directory:
+
+```bash
+cd ~/.config/omarchy/plugins/io.github.omashift.omashift && ./install
+```
+
+To remove it:
+
+```bash
+omarchy plugin remove io.github.omashift.omashift
+```
+
+That deletes the checkout and takes the button off your bar. If you ran
+`./install` from inside the plugin directory, run `./install --uninstall`
+first, while the directory still exists.
+
+The bar widget is the only piece of Omashift that runs inside `omarchy-shell`.
+It draws a mark, reads one file, and spawns the launcher. The game itself is a
+separate process, so a crash in a fullscreen game cannot take your bar and your
+notifications with it.
+
 ## Play
 
 `SUPER + ALT + O` opens the front screen. Your keybindings still work at this point, and the game is waiting on you.
@@ -156,6 +201,7 @@ While a stage runs, Omashift owns the keyboard. That is the feature. It also mea
 1. `SUPER + SHIFT + ESCAPE` retires the stage immediately.
 2. **Sixty seconds** with no keypress hands the keyboard back on its own. If you walked away, the game lets go.
 3. **A ninety second watchdog** force-releases the keymap even if the engine has stopped answering, because it runs in the compositor rather than in the game.
+4. **Your pointer**, if you installed the plugin above. Right click the bar widget to retire the stage. This is the only route that does not go through the keyboard at all, which matters because a stranded stage answers `SUPER + RETURN` as a pace note: there is no way to open a terminal from the keyboard, and the pointer is the only way back in.
 
 **So if you are ever stuck, wait ninety seconds.** You do not need another machine, a phone, or a TTY. Nothing about this is permanent, and nothing is written to your Hyprland config at any point.
 
