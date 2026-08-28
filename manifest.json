@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.omashift.omashift",
+  "name": "Omashift",
+  "version": "1.0.0",
+  "author": "John Trainor",
+  "license": "MIT",
+  "description": "A rally game that drills your Omarchy keybindings. The bar widget opens it, and retires a stage that is still holding your keyboard.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "qml/BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Omashift",
+    "description": "Open Omashift, or retire a stage that is still running",
+    "category": "Training",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
