@@ -1,0 +1,56 @@
+#!/bin/bash
+
+# Restore the keybinding hint overlay to whatever it was BEFORE play.
+#
+# Extracted so there is exactly ONE implementation of "put it back". Both the
+# launcher's --stop and the engine's in-game retire need it, and the engine used
+# to skip it entirely: a player who exited the advertised way, with
+# SUPER+SHIFT+ESCAPE, got their bindings back but left the overlay off for good.
+#
+# Idempotent. The prior-state file is removed on the way out, so a second call
+# (--stop after an in-game retire) is a no-op rather than a second toggle.
+# Silent when there is nothing recorded, so it says something only when it acted.
+#
+# GUARDED. Toggling the overlay makes the plugin call set_enabled() on every
+# keybind object it has cached, and doing that to a keybind that has since been
+# destroyed segfaults Hyprland. That is what happened on 2026-08-25. The guard
+# prunes the dead entries first and refuses if it cannot prove the caches are
+# clean, in which case the overlay stays off and the session survives. See
+# bin/omashift-guide-guard and ../../omarchy/hyprland-lua-keybind-crash.md.
+
+set -uo pipefail
+
+# readlink -f for the same reason the launcher does it: this runs both from the
+# repo (bin/) and from the staged copy in $BASE, and the guard sits beside it in
+# both layouts.
+HERE=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+BASE="${OMASHIFT_BASE:-$HOME/.local/share/omashift}"
+# Overridable so the suite can drive this whole script against a stub and cover
+# the branch that actually toggles the overlay. Without that the one path worth
+# testing is the one no test could touch without risking the compositor.
+GUIDE="${OMASHIFT_GUIDE_TOGGLE:-$HOME/.config/omarchy/plugins/io.github.ctl0v0.keybinding-guide/bin/keybinding-guide-toggle}"
+GUARD="$HERE/omashift-guide-guard"
+PRIOR="$BASE/guide-prior.json"
+
+[[ -x $GUIDE ]] || exit 0
+[[ -r $PRIOR ]] || exit 0
+
+# The "was off" branch never calls the toggle, so it cannot crash anything and
+# does not need the guard. Only the branch that actually touches the overlay is
+# gated, which keeps the common no-op path free of a hyprctl round trip.
+if grep -q '"enabled":true' "$PRIOR" 2>/dev/null; then
+  # Missing guard is treated as unsafe. A restore is a convenience; the session
+  # is not. Refusing costs a hint overlay you can turn back on by hand.
+  if [[ ! -x $GUARD ]]; then
+    echo "keybinding guide: guard missing, left off rather than risk the session" >&2
+    echo "  turn it back on yourself once $GUARD is in place" >&2
+  elif "$GUARD"; then
+    "$GUIDE" on >/dev/null 2>&1 || true
+    echo "keybinding guide: restored (was on)"
+  else
+    echo "keybinding guide: left off, see the guard's reason above" >&2
+  fi
+else
+  echo "keybinding guide: left off (was off)"
+fi
+rm -f "$PRIOR"

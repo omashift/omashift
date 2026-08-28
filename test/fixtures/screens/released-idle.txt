@@ -1,0 +1,6 @@
+OMASHIFT
+
+
+  released after 5 seconds idle.
+
+  your keybindings are back. run omashift again to restart.

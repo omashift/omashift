@@ -1,0 +1,186 @@
+#!/bin/bash
+
+# Cross-run analysis of ~/.local/share/omashift/history.jsonl.
+#
+# The in-game telemetry covers ONE stage. This covers all of them, which is
+# where the durable signal lives: a binding missed once is noise, a binding
+# missed three times across three sessions is a blind spot.
+#
+# WHERE THE DEFINITIONS LIVE
+#
+# Two of the sections below are not this script's opinion. "Blind spots" and
+# "your ghost" are asked of core.lua, the same code that builds the course and
+# races you, so the report cannot disagree with the game. This script used to
+# compute blind spots itself, which meant two definitions of the same idea. That is
+# the exact drift the palette in `spinai` avoids by generating its second copy.
+#
+# Everything else here is presentation of raw fields, which is python's job.
+
+set -uo pipefail
+# readlink -f, because this is invoked through a symlink on PATH. Without it
+# $0 is ~/.local/bin/omashift and HERE resolves to ~/.local, so nothing finds
+# lib/, which is exactly what installing it revealed.
+HERE=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
+HIST="${OMASHIFT_HISTORY:-${OMASHIFT_BASE:-$HOME/.local/share/omashift}/history.jsonl}"
+
+# --visual publishes the Logbook to the overlay instead of printing it.
+#
+# Same shape as the cabinet, and for the same reason: the state file IS the
+# interface between the game and any display, so nothing is needed on the QML
+# side beyond a screen named "stats". --publish writes and stops, which is what
+# the menu needs, because an overlay is already up showing the menu and
+# restarting it would tear down the thing that asked.
+#
+# The report below stays exactly as it was. It is the deeper read: blind spots,
+# every ghost time, the full ladder. The screen answers one question well; the
+# terminal answers all of them.
+if [[ ${1:-} == "--visual" || ${1:-} == "--publish" ]]; then
+  STATE_JSON="${OMASHIFT_STATE_JSON:-/tmp/omashift-state.json}"
+  QML_DIR="$HERE/qml"
+
+  lua - "$HERE" "$HIST" "$STATE_JSON" <<'VISUAL' || { echo "could not build the logbook" >&2; exit 1; }
+package.path = arg[1] .. "/lib/?.lua;" .. package.path
+local core = require("core")
+local stats = require("stats")
+-- The Logbook names courses, so it has to know the ones the player wrote.
+-- Without this it is a fresh Lua state that has never read courses.lua, and
+-- core.course_label falls back to the raw key: every shipped course showed as
+-- "Daily Driver" and the one the player actually plays as "cockpit", in the
+-- table and in "your last stage". Same shape as the --cycle-course bug in
+-- lib/courses-file.lua, in a state nothing had thought to load the file into.
+require("courses-file").merge(core, require("courses-file").path())
+
+-- A missing history is not an error here, it is a new player. stats.model("")
+-- returns the empty Logbook, which says so on screen and is a far better answer
+-- than a menu key that does nothing.
+local f = io.open(arg[2], "r")
+local text = ""
+if f then
+  text = f:read("*a")
+  f:close()
+end
+
+local scene = require("scene")
+local model = stats.model(text)
+-- The same backdrop the game opens on. These screens dim the whole
+-- surface themselves, tuned for text over a picture, so the scene's own
+-- scrim is overridden to zero rather than stacked under that one.
+model.scene = scene.resolve(core.DEFAULT_SCENE, 0)
+-- Where ESCAPE goes. Reached from the menu it goes back to the menu; opened
+-- from a terminal there is nothing to go back to, so it leaves.
+model.back = os.getenv("OMASHIFT_STATS_BACK")
+
+-- Written through a temp file and renamed. The overlay watches this path, and a
+-- reader that catches a half-written document draws a broken screen; rapid
+-- course cycling proved that is not theoretical.
+local tmp = arg[3] .. ".tmp"
+local out = assert(io.open(tmp, "w"))
+out:write(core.to_json(model), "\n")
+out:close()
+assert(os.rename(tmp, arg[3]))
+VISUAL
+
+  if [[ ${1:-} == "--publish" ]]; then
+    exit 0
+  fi
+
+  if ! command -v quickshell >/dev/null 2>&1; then
+    echo "quickshell not installed. 'omashift-stats' prints the same numbers" >&2
+    exit 1
+  fi
+  # Restarted, never reused: quickshell reads the QML straight from the repo, so
+  # a live overlay is showing whatever the file said when it started.
+  pkill -f "$QML_DIR/shell.qml" 2>/dev/null || true
+  sleep 0.3
+  OMASHIFT_BIN="$HERE/bin/omashift" \
+    setsid quickshell -p "$QML_DIR/shell.qml" >"${OMASHIFT_BASE:-$HOME/.local/share/omashift}/qml.log" 2>&1 &
+  disown 2>/dev/null || true
+  echo "the logbook is on screen. press ESCAPE to close it."
+  exit 0
+fi
+
+[[ -r $HIST ]] || {
+  echo "no stages recorded yet. Play one, then run this again."
+  exit 0
+}
+
+python3 - "$HIST" <<'PY'
+import json, sys, collections
+
+recs = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+print(f"=== {len(recs)} recorded stages ===\n")
+
+print("  run   course        mode     score   offs    avg      assisted")
+for i, r in enumerate(recs, 1):
+    avg = r.get('average_ms')
+    print(f"  {i:>3}   {r.get('course','all')[:12]:<12}  {r.get('difficulty','-')[:7]:<7}  "
+          f"{r['correct']:>2}/{r['prompts']:<3}  {r['offs']:>2}   "
+          f"{(str(avg)+'ms') if avg else '-':>8}   {'yes' if r['assisted'] else 'no'}")
+
+# Where you actually sit on the ladder. The tiers were recalibrated against this
+# very distribution, so it is worth being able to see it drift back.
+times = [a['reaction_ms'] for r in recs for a in r['answers']
+         if a['outcome'] == 'correct' and a.get('reaction_ms') and a['reaction_ms'] < 30000]
+if times:
+    print(f"\n=== where your answers land (n={len(times)}, medium ladder) ===")
+    # Bands carried explicitly rather than leaked between iterations: the band
+    # floor is the previous ceiling, and reading that from a loop variable set
+    # last time round is the kind of thing that breaks when a tier is inserted.
+    LADDER = (('zero-latency', 0, 600), ('on-rails', 600, 900), ('clean', 900, 1250),
+              ('steady', 1250, 1750), ('slow', 1750, None))
+    for name, lo, hi in LADDER:
+        c = sum(1 for t in times if t > lo and (hi is None or t <= hi))
+        pct = 100.0 * c / len(times)
+        band = f"<={hi}" if hi else f">{lo}"
+        print(f"  {name:<13} {band:>7}  {c:>3}  {pct:>5.1f}%  {'#' * int(pct / 2)}")
+    # Same mapping as the game: a fixed distance over the time. See core.SPEED.
+    kmh = lambda ms: min(250, round(250 * 600 / ms)) if ms and ms > 0 else 0
+    fast, med = min(times), sorted(times)[len(times) // 2]
+    print(f"\n  top speed: {kmh(fast)} km/h ({fast} ms)"
+          f"      typical: {kmh(med)} km/h ({med} ms)")
+
+# An off is the signal; a stage with none is the goal. Both are worth a number.
+clean = sum(1 for r in recs if r.get('clean'))
+unassisted = sum(1 for r in recs if not r['assisted'])
+print(f"\n  clean stages: {clean}/{len(recs)}      unassisted: {unassisted}/{len(recs)}"
+      f"      (only unassisted runs set personal bests)")
+PY
+
+# --- the two sections core.lua owns ------------------------------------------
+# Quoted heredoc, paths passed as ARGUMENTS. Interpolating them into the source
+# would break on any path containing a quote or backslash, and is the shape of
+# an injection even when the only caller is this script.
+lua - "$HERE" "$HIST" <<'LUA'
+package.path = arg[1] .. "/lib/?.lua;" .. package.path
+local core = require("core")
+local f = assert(io.open(arg[2])); local text = f:read("*a"); f:close()
+
+local spots = core.blind_spots(text)
+if #spots > 0 then
+  print("\n=== blind spots: this is the course `--course blind-spots` builds ===")
+  for i, r in ipairs(spots) do
+    if i > 10 then break end
+    local why = (r.reason == "missed")
+      and string.format("%d/%d missed (%d%%)", r.misses, r.seen, math.floor(100 * r.misses / r.seen))
+      or  string.format("right but slow (%d ms avg)", r.mean_ms or 0)
+    print(string.format("  %-28s  %s", r.description, why))
+  end
+  print(string.format("\n  thresholds: %d+ misses, or averaging %d ms+ when correct",
+    core.BLIND_SPOT.min_misses, core.BLIND_SPOT.slow_ms))
+end
+
+local best = core.personal_bests(text)
+local rows = {}
+for d, ms in pairs(best) do rows[#rows + 1] = { d = d, ms = ms } end
+table.sort(rows, function(a, b) return a.ms < b.ms end)
+if #rows > 0 then
+  print("\n=== your ghost: the times each stage races ===")
+  for i, r in ipairs(rows) do
+    if i > 10 then break end
+    print(string.format("  %6d ms   %s", r.ms, r.d))
+  end
+  print(string.format("\n  %d actions have a ghost. Play unassisted to set more.", #rows))
+else
+  print("\n=== your ghost ===\n  none yet. finish a stage without the co-driver calling.")
+end
+LUA

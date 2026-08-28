@@ -1,0 +1,2 @@
+# Written by test/test-lint.sh when ruff runs. Nothing here is source.
+.ruff_cache/

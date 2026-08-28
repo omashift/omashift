@@ -1,0 +1,38 @@
+OMASHIFT  ·  THE LOGBOOK
+
+  ARE YOU GETTING BETTER?
+
+    FASTER than when you started.
+    5 of 5 bindings seen in both windows improved: 43 km/h to 103 km/h.
+    biggest gain: Omarchy menu, 30 km/h to 97 km/h.
+
+    window                 stages  accuracy    typical     spread
+    your first 7 stages         7       91%    45 km/h      64%
+    your last 5                 5      100%   103 km/h      14%
+    Your answers are clustering tighter, which usually comes first.
+
+  EVERY STAGE, IN ORDER  (12 of them)
+    pace      ▁▁▁▁▁▁▄▃████
+    accuracy  ▁█▁█▁███████
+
+  ALL TIME
+    13 stages over 13 days, 2026-06-01 to 2026-06-13.
+    58 of 61 answers correct (95%), typical 64 km/h.
+    9 clean stages, 12 run without the co-driver.
+
+  BY COURSE
+    course               stages  accuracy    typical   clean
+    Daily Driver             12       95%    68 km/h       8
+    Blind Spots               1      100%    58 km/h       1
+
+  YOUR LAST STAGE  ·  Daily Driver, medium, 2026-06-13
+    · retired part-way, 1 of 5 answered
+    · quickest: Terminal at 117 km/h
+    · 1 personal best set
+    · 54 km/h quicker than your usual 63 km/h
+
+  RECORDS
+    top speed          120 km/h   Full screen
+    quickest stage     111 km/h   Daily Driver, 2026-06-12
+    best stage         100%       5 of 5, Daily Driver
+

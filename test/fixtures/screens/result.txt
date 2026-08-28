@@ -1,0 +1,9 @@
+OMASHIFT
+
+  stage  1 / 3
+  gear   [ 1 - - - ]
+  points 25
+
+  STEADY  115 km/h  +25
+
+    expected: SUPER + F   (Full screen)

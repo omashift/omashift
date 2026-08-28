@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Omashift">
+  <title>Omashift</title>
+  <rect width="512" height="512" fill="#1B1424"/>
+  <g fill="#F3F19A">
+    <rect x="165.5" y="105.5" width="61" height="16"/>
+    <rect x="285.5" y="105.5" width="61" height="16"/>
+    <rect x="165.5" y="120.5" width="61" height="16"/>
+    <rect x="285.5" y="120.5" width="61" height="16"/>
+    <rect x="165.5" y="135.5" width="16" height="16"/>
+    <rect x="210.5" y="135.5" width="16" height="16"/>
+    <rect x="285.5" y="135.5" width="16" height="16"/>
+    <rect x="330.5" y="135.5" width="16" height="16"/>
+    <rect x="165.5" y="150.5" width="16" height="16"/>
+    <rect x="210.5" y="150.5" width="16" height="16"/>
+    <rect x="285.5" y="150.5" width="16" height="16"/>
+    <rect x="330.5" y="150.5" width="16" height="16"/>
+    <rect x="165.5" y="165.5" width="16" height="16"/>
+    <rect x="210.5" y="165.5" width="16" height="16"/>
+    <rect x="285.5" y="165.5" width="16" height="16"/>
+    <rect x="330.5" y="165.5" width="16" height="16"/>
+    <rect x="165.5" y="180.5" width="16" height="16"/>
+    <rect x="210.5" y="180.5" width="16" height="16"/>
+    <rect x="285.5" y="180.5" width="16" height="16"/>
+    <rect x="330.5" y="180.5" width="16" height="16"/>
+    <rect x="165.5" y="195.5" width="16" height="16"/>
+    <rect x="210.5" y="195.5" width="16" height="16"/>
+    <rect x="285.5" y="195.5" width="16" height="16"/>
+    <rect x="330.5" y="195.5" width="16" height="16"/>
+    <rect x="165.5" y="210.5" width="16" height="16"/>
+    <rect x="210.5" y="210.5" width="16" height="16"/>
+    <rect x="285.5" y="210.5" width="16" height="16"/>
+    <rect x="330.5" y="210.5" width="16" height="16"/>
+    <rect x="165.5" y="225.5" width="16" height="16"/>
+    <rect x="210.5" y="225.5" width="91" height="16"/>
+    <rect x="330.5" y="225.5" width="16" height="16"/>
+    <rect x="165.5" y="240.5" width="16" height="16"/>
+    <rect x="330.5" y="240.5" width="16" height="16"/>
+    <rect x="165.5" y="255.5" width="16" height="16"/>
+    <rect x="330.5" y="255.5" width="16" height="16"/>
+    <rect x="165.5" y="270.5" width="16" height="16"/>
+    <rect x="210.5" y="270.5" width="91" height="16"/>
+    <rect x="330.5" y="270.5" width="16" height="16"/>
+    <rect x="165.5" y="285.5" width="16" height="16"/>
+    <rect x="210.5" y="285.5" width="16" height="16"/>
+    <rect x="285.5" y="285.5" width="16" height="16"/>
+    <rect x="330.5" y="285.5" width="16" height="16"/>
+    <rect x="165.5" y="300.5" width="16" height="16"/>
+    <rect x="210.5" y="300.5" width="16" height="16"/>
+    <rect x="285.5" y="300.5" width="16" height="16"/>
+    <rect x="330.5" y="300.5" width="16" height="16"/>
+    <rect x="165.5" y="315.5" width="16" height="16"/>
+    <rect x="210.5" y="315.5" width="16" height="16"/>
+    <rect x="285.5" y="315.5" width="16" height="16"/>
+    <rect x="330.5" y="315.5" width="16" height="16"/>
+    <rect x="165.5" y="330.5" width="16" height="16"/>
+    <rect x="210.5" y="330.5" width="16" height="16"/>
+    <rect x="285.5" y="330.5" width="16" height="16"/>
+    <rect x="330.5" y="330.5" width="16" height="16"/>
+    <rect x="165.5" y="345.5" width="16" height="16"/>
+    <rect x="210.5" y="345.5" width="16" height="16"/>
+    <rect x="285.5" y="345.5" width="16" height="16"/>
+    <rect x="330.5" y="345.5" width="16" height="16"/>
+    <rect x="165.5" y="360.5" width="16" height="16"/>
+    <rect x="210.5" y="360.5" width="16" height="16"/>
+    <rect x="285.5" y="360.5" width="16" height="16"/>
+    <rect x="330.5" y="360.5" width="16" height="16"/>
+    <rect x="165.5" y="375.5" width="61" height="16"/>
+    <rect x="285.5" y="375.5" width="61" height="16"/>
+    <rect x="165.5" y="390.5" width="61" height="16"/>
+    <rect x="285.5" y="390.5" width="61" height="16"/>
+    <circle cx="316" cy="346" r="21"/>
+  </g>
+</svg>

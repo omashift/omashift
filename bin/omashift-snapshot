@@ -1,0 +1,111 @@
+#!/bin/bash
+# Save a picture of what is on screen right now, or shortly.
+#
+#   omashift-snapshot [label]
+#   omashift-snapshot --in <seconds> [label]
+#
+# WHY THERE IS A TIMER
+#
+# `P` covers the end screens, and it cannot cover a stage in progress. While one
+# runs, a Hyprland submap has replaced the whole keymap: a key in the question
+# bank is scored and every other key does nothing at all, so there is no key left
+# for the game to offer. That is the feature working, not a gap in it -- but it
+# means the one screen the README most wants a picture of is the one screen no
+# keystroke can photograph.
+#
+# So arm it first and then play:
+#
+#   omashift-snapshot --in 15 stage
+#
+# Run that in a terminal, launch a stage, and be mid-pace-note when it fires.
+# grim is a screencopy client and does not care who holds the keyboard, so the
+# capture lands whatever the compositor is doing. Nothing is drawn on screen
+# before the shutter -- a countdown would photograph itself -- and the
+# notification only comes after the file is written.
+#
+# WHY THE GAME HAS TO DO THIS ITSELF
+#
+# The Cabinet and the Logbook are the two screens this game was built to be
+# screenshotted from, and they are the two screens on which you cannot take a
+# screenshot. A layer-shell surface holding exclusive keyboard focus swallows
+# every global shortcut, Hyprland's own included, so the key you would normally
+# reach for does nothing. During a stage it is worse: the submap has replaced
+# the whole keymap.
+#
+# So the game owns the keyboard, and the game provides the shortcut. This is
+# what P runs from inside the overlay, and PRINT too on a keyboard that has one.
+#
+# NOT omarchy-capture-screenshot. That one is the right tool everywhere else: it
+# freezes the screen and opens a region picker. Both of those fight a fullscreen
+# overlay that already holds the keyboard, and neither is wanted here, because
+# the thing being captured is the whole screen and it is already still.
+
+set -uo pipefail
+
+command -v grim >/dev/null 2>&1 || {
+  echo "grim is not installed, so nothing can be captured" >&2; exit 1; }
+
+# Omarchy's own directory convention, read the same way it reads it.
+# shellcheck source=/dev/null
+[[ -f ~/.config/user-dirs.dirs ]] && source ~/.config/user-dirs.dirs 2>/dev/null
+DIR="${OMARCHY_SCREENSHOT_DIR:-${XDG_PICTURES_DIR:-$HOME/Pictures}}"
+mkdir -p "$DIR" 2>/dev/null || { echo "cannot write to $DIR" >&2; exit 1; }
+
+# ARM THE TIMER, then get out of the way. Parsed before the label so that
+# `--in 15 stage` and `--in 15` both read the way they look.
+delay=0
+if [[ ${1:-} == "--in" ]]; then
+  delay=${2:-}
+  [[ $delay =~ ^[0-9]+$ ]] || {
+    echo "omashift-snapshot: --in wants a whole number of seconds" >&2; exit 2; }
+  shift 2
+fi
+
+label=${1:-omashift}
+# A label is part of a filename, so it may not be a path or a surprise.
+label=$(printf '%s' "$label" | tr -cd 'a-zA-Z0-9_-')
+[[ -n $label ]] || label=omashift
+
+# The wait happens in a DETACHED child, so the terminal comes straight back and
+# the stage can be launched from it. A foreground sleep would hold the terminal
+# that has to start the game, which is the one thing this must not do.
+#
+# `readlink -f`, because this is re-entering itself and $0 may be the symlink in
+# ~/.local/bin rather than the file. Same reason the launcher does it.
+if (( delay > 0 )); then
+  self=$(readlink -f "${BASH_SOURCE[0]}")
+  echo "capturing in ${delay}s. start your stage now"
+  ( sleep "$delay"; exec "$self" "$label" ) >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+  exit 0
+fi
+
+FILE="$DIR/omashift-$label-$(date +'%Y-%m-%d_%H-%M-%S').png"
+
+# The monitor the player is looking at, not every monitor stitched together. A
+# two screen capture of a game that draws the same thing on both is a wide
+# picture of one screen twice.
+output=$(hyprctl -j activeworkspace 2>/dev/null | jq -r '.monitor // empty' 2>/dev/null)
+
+if [[ -n $output ]] && grim -o "$output" "$FILE" 2>/dev/null; then
+  :
+elif grim "$FILE" 2>/dev/null; then
+  :
+else
+  echo "grim could not capture the screen" >&2
+  exit 1
+fi
+
+# On the clipboard as well, because the next thing anyone does with a screenshot
+# of their trophy case is paste it somewhere.
+command -v wl-copy >/dev/null 2>&1 && wl-copy --type image/png < "$FILE" 2>/dev/null || true
+
+# Best effort. The picture is already saved; a notification daemon having a bad
+# day must not report the capture itself as failed.
+if command -v omarchy-notification-send >/dev/null 2>&1; then
+  omarchy-notification-send "Omashift" "Saved to $FILE" --image "$FILE" >/dev/null 2>&1 || true
+elif command -v notify-send >/dev/null 2>&1; then
+  notify-send -a Omashift -t 4000 "Omashift" "Saved to $FILE" >/dev/null 2>&1 || true
+fi
+
+echo "$FILE"

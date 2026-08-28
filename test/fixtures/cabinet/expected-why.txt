@@ -1,0 +1,56 @@
+
+MILESTONES: once, ever
+  [1/8]    Open Sesame            one per course              
+           finishing a course for the first time
+           source: Brendan Iribe, Sesame
+  [     ]  Built To Order         not yet                     
+           finishing a Blind Spots stage
+           source: Michael Dell: build-to-order manufacturing
+  [ won ]  Omakase                earned 2026-08-25           
+           a curated course, clean and unaided
+           source: DHH: Rails Doctrine; also the origin of Omarchy's own name
+  [     ]  Sharp Knives           not yet                     
+           finishing the Endurance course
+           source: DHH: Rails Doctrine, "provide sharp knives"
+  [     ]  Class Win              not yet                     
+           a clean Endurance run
+           source: endurance racing
+
+MASTERY: one per course
+  [1/8]    Conversion Rate: 100%  one per course              
+           every note correct, co-driver allowed
+           source: Tobi Lütke, Shopify
+  [1/8]    Getting Real           one per course              
+           a course completed clean
+           source: Jason Fried, 37signals: Getting Real
+  [1/8]    Direct Drive           one per course              
+           clean, and no co-driver called
+           source: Michael Dell: the Direct Model; also direct-drive wheelbases
+
+REPEATABLES: bronze / silver / gold
+  [bronze] Zero Latency           8/10 to silver              
+           answers under the top threshold
+           source: Matthew Prince, Cloudflare
+  [silver] You're On Rails        19/50 to gold               
+           answers in the second tier or better
+           source: DHH: Rails, and racing
+  [gold]   Cache Hit              58, maxed                   
+           recalling a binding you had previously missed
+           source: Matthew Prince, Cloudflare: CDN caching
+  [bronze] Fast Off The Blocks    4/10 to silver              
+           the first three notes correct
+           source: Jack Dorsey, Block
+  [bronze] Presence               4/10 to silver              
+           six in a row with no hesitation
+           source: Brendan Iribe: presence, Oculus's term of art
+  [bronze] Rework                 1/10 to silver              
+           beating your own previous average on a course
+           source: Jason Fried, 37signals: Rework
+
+STREAKS: consecutive days
+  [      ] Compound Interest      2/3 to bronze               
+           playing on consecutive days
+           source: Michael Dell: Invest America, where accounts compound until 18
+
+  12 of 43 earned.
+  played on 2 days, most recently 2026-08-26.

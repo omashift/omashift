@@ -1,0 +1,5 @@
+{
+  "counts": {"cache-hit":58,"compound-interest":2,"fast-off-the-blocks":4,"on-rails":19,"presence":4,"rework":1,"zero-latency":8},
+  "earned": {"cache-hit@bronze":"2026-08-25","cache-hit@gold":"2026-08-26","cache-hit@silver":"2026-08-25","conversion-rate@daily-driver":"2026-08-25","direct-drive@daily-driver":"2026-08-25","fast-off-the-blocks@bronze":"2026-08-25","getting-real@daily-driver":"2026-08-25","omakase":"2026-08-25","on-rails@bronze":"2026-08-25","on-rails@silver":"2026-08-26","open-sesame@daily-driver":"2026-08-25","presence@bronze":"2026-08-25","rework@bronze":"2026-08-25","zero-latency@bronze":"2026-08-25"},
+  "days": ["2026-08-25","2026-08-26"]
+}

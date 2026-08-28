@@ -1,0 +1,10 @@
+OMASHIFT
+
+  stage  1 / 4
+  gear   [ 1 - - - ]
+  points 0
+
+  OFF, into the scenery
+
+    expected: SUPER + F   (Full screen)
+    you pressed: SUPER + SPACE  · Omarchy menu

@@ -1,0 +1,182 @@
+#!/bin/bash
+
+# The Cabinet: what you have won, and what there is to win.
+#
+# The design calls for a visual trophy case and says so for a reason: it is the
+# screen people screenshot, and text undersells it. This is not that. It is the
+# same data in the terminal, so the Cabinet is usable before the QML display
+# exists rather than waiting on it.
+#
+# It shows LOCKED trophies too, on purpose. A new player opening a mostly-empty
+# cabinet should see what the game will eventually teach. The empty state is the
+# roadmap, which matters most to exactly the audience this is built for.
+#
+# Attribution is deliberately not on the badge face. `--why` explains the
+# references; the listing itself just names the phrase, so a permanent display
+# never reads as a patron endorsement.
+
+set -uo pipefail
+# readlink -f, because this is invoked through a symlink on PATH. Without it
+# $0 is ~/.local/bin/omashift and HERE resolves to ~/.local, so nothing finds
+# lib/, which is exactly what installing it revealed.
+HERE=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
+CABINET="${XDG_STATE_HOME:-$HOME/.local/state}/omashift/trophies.json"
+
+WHY=0
+[[ ${1:-} == "--why" ]] && WHY=1
+
+# --visual publishes the cabinet to the overlay instead of printing it.
+#
+# It writes the same model to the same state file the engine writes, because
+# that file IS the interface between the game and any display. Nothing special
+# is needed on the QML side beyond a screen named "cabinet": anything that
+# publishes a valid model gets rendered, engine or not.
+#
+# Escape closes it, like every other end screen, and it clears itself after 45
+# seconds so a forgotten cabinet is never a fullscreen surface nobody asked for.
+# --publish writes the model and stops. --visual also makes sure an overlay is up.
+#
+# The split matters when the menu asks for the cabinet: an overlay is already
+# running and showing the menu, so restarting it to show a different screen
+# would tear down the thing that asked. Publishing is enough; the running
+# overlay is watching the file.
+if [[ ${1:-} == "--visual" || ${1:-} == "--publish" ]]; then
+  STATE_JSON="${OMASHIFT_STATE_JSON:-/tmp/omashift-state.json}"
+  QML_DIR="$HERE/qml"
+
+  lua - "$HERE" "$CABINET" "$STATE_JSON" <<'VISUAL' || { echo "could not build the cabinet" >&2; exit 1; }
+package.path = arg[1] .. "/lib/?.lua;" .. package.path
+local core = require("core")
+local T = require("trophies")
+local C = require("cabinet")
+
+local f = io.open(arg[2], "r")
+local saved = f and core.parse_cabinet(f:read("*a")) or T.new_cabinet()
+if f then f:close() end
+
+local courses = {}
+for _, name in ipairs(core.course_names()) do courses[#courses + 1] = name end
+
+local out = assert(io.open(arg[3], "w"))
+local scene = require("scene")
+local model = C.model(saved, courses)
+-- The same backdrop the game opens on. These screens dim the whole
+-- surface themselves, tuned for text over a picture, so the scene's own
+-- scrim is overridden to zero rather than stacked under that one.
+model.scene = scene.resolve(core.DEFAULT_SCENE, 0)
+-- Where ESCAPE goes. Reached from the menu it goes BACK to the menu, the way
+-- any game's trophy case does. Opened on its own from a terminal there is
+-- nothing to go back to, so it leaves.
+model.back = os.getenv("OMASHIFT_CABINET_BACK")
+out:write(core.to_json(model), "\n")
+out:close()
+VISUAL
+
+  # Publishing is the whole job when something else owns the overlay.
+  if [[ ${1:-} == "--publish" ]]; then
+    exit 0
+  fi
+
+  if ! command -v quickshell >/dev/null 2>&1; then
+    echo "quickshell not installed. 'omashift-cabinet' prints the same cabinet" >&2
+    exit 1
+  fi
+  # Restarted, never reused, for the same reason the launcher does it: quickshell
+  # reads the QML straight from the repo, so a live overlay is showing whatever
+  # the file said when it started.
+  pkill -f "$QML_DIR/shell.qml" 2>/dev/null || true
+  sleep 0.3
+  # Same callback, so Escape leaves rather than hiding.
+  OMASHIFT_BIN="$HERE/bin/omashift" \
+    setsid quickshell -p "$QML_DIR/shell.qml" >"${OMASHIFT_BASE:-$HOME/.local/share/omashift}/qml.log" 2>&1 &
+  disown 2>/dev/null || true
+  echo "the cabinet is on screen. press ESCAPE to close it."
+  exit 0
+fi
+
+# Replay every recorded stage through the trophy rules and rewrite the cabinet.
+#
+# Trophies arrived after the history did, so without this a player's existing
+# play counts for nothing. Earning is a pure function of the runs in order, so a
+# replay produces exactly the cabinet those runs would have produced, which is
+# also the cheapest way to check the rules against real play rather than
+# fixtures.
+if [[ ${1:-} == "--rebuild" ]]; then
+  HIST="${OMASHIFT_BASE:-$HOME/.local/share/omashift}/history.jsonl"
+  [[ -r $HIST ]] || { echo "no history at $HIST" >&2; exit 1; }
+  mkdir -p "$(dirname "$CABINET")"
+  if lua - "$HERE" "$HIST" "$CABINET" <<'REBUILD'
+package.path = arg[1] .. "/lib/?.lua;" .. package.path
+local core = require("core")
+local T = require("trophies")
+local f = assert(io.open(arg[2])); local text = f:read("*a"); f:close()
+
+local cabinet = T.new_cabinet()
+local runs = core.parse_runs(text)
+local prior = {}          -- lines of history BEFORE the run being judged
+local total = 0
+for _, run in ipairs(runs) do
+  local before = table.concat(prior, "\n")
+  -- The record stores reaction times, not tiers, so the tier is recomputed on
+  -- the ladder that stage was actually played on.
+  local scale = core.difficulty(run.difficulty).tier_scale
+  local results = {}
+  for i, a in ipairs(run.answers) do
+    results[i] = { outcome = a.outcome, description = a.description,
+                   tier = a.outcome == "correct" and core.tier_for(a.reaction_ms, scale).name or nil }
+  end
+  local won = T.record(cabinet, {
+    course = run.course, completed = run.completed == true,
+    assisted = run.assisted == true, difficulty = run.difficulty,
+    day = tostring(run.stamp or ""):sub(1, 10),
+    summary = { prompts = run.prompts, correct = run.correct, offs = run.offs,
+                clean = run.clean == true, requeues = run.requeues,
+                average_ms = run.average_ms },
+    results = results,
+    previously_missed = core.previously_missed(before),
+    previous_course_average = core.best_course_average(before, run.course),
+  })
+  total = total + #won
+  prior[#prior + 1] = run.line
+end
+
+local out = assert(io.open(arg[3], "w"))
+out:write(core.serialize_cabinet(cabinet))
+out:close()
+print(("  replayed %d stages, %d trophies earned."):format(#runs, total))
+REBUILD
+  then
+    echo "  cabinet rewritten: $CABINET"
+  else
+    echo "  rebuild failed, cabinet left as it was" >&2
+    exit 1
+  fi
+  exit 0
+fi
+
+# The reading and the rendering both come from lib/, not from here.
+#
+# This used to compute the cabinet AND format it in one pass, which made the
+# trophy case a terminal feature rather than a feature: the visual cabinet could
+# not reuse a line of it and would have meant a second implementation of every
+# rule about what counts as won. lib/cabinet.lua now owns the reading and
+# lib/screens.lua owns the text, so both displays show the same cabinet by
+# construction.
+lua - "$HERE" "$CABINET" "$WHY" <<'LUA'
+package.path = arg[1] .. "/lib/?.lua;" .. package.path
+local core = require("core")
+local T = require("trophies")
+local C = require("cabinet")
+local screens = require("screens")
+
+local f = io.open(arg[2], "r")
+local saved = f and core.parse_cabinet(f:read("*a")) or T.new_cabinet()
+if f then f:close() end
+
+local courses = {}
+for _, name in ipairs(core.course_names()) do courses[#courses + 1] = name end
+
+local model = C.model(saved, courses)
+model.why = arg[3] == "1"
+io.write(table.concat(screens.render(model), "\n"), "\n")
+LUA

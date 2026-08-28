@@ -1,0 +1,21 @@
+# ruff configuration.
+#
+#   ruff check assets test
+#
+# There is not much Python here: a generator that draws the wordmark and the
+# patron's mark, and two checkers the shell suites call. It is worth linting
+# anyway, because all three are things the test suite depends on being correct
+# and none of them is exercised as thoroughly as the Lua is.
+
+line-length = 88
+target-version = "py311"
+
+[lint]
+# The defaults, plus the ones that catch a mistake rather than a preference.
+select = [
+  "E",    # pycodestyle
+  "F",    # pyflakes: undefined names, unused imports, the real bugs
+  "B",    # flake8-bugbear: mutable defaults, loop-variable binding
+  "UP",   # pyupgrade
+  "SIM",  # simplifiable code
+]

@@ -1,0 +1,286 @@
+#!/bin/bash
+
+# Make it safe to toggle the keybinding hint overlay.
+#
+# WHY THIS EXISTS
+#
+# On 2026-08-25 toggling the overlay back on after a stage segfaulted Hyprland
+# and dropped the session into Safe Mode. The cause is an upstream Hyprland null
+# dereference, diagnosed from the core dump the next day. Full write-up:
+# ../../omarchy/hyprland-lua-keybind-crash.md
+#
+# In short. A Lua keybind object holds a WEAK pointer. When the keybind behind
+# it is destroyed, Hyprland's `getKeybindFromUserdata` locks that weak pointer to
+# a NULL shared pointer and then wraps it in a `std::optional`, which is engaged
+# no matter what it contains. Every `if (!keybind)` guard in LuaKeybind.cpp
+# therefore tests the optional instead of the pointer and never fires, and the
+# next line writes through null.
+#
+# The keybinding-guide plugin caches keybind objects in two tables and calls
+# `set_enabled` on every entry each time the overlay is toggled, in either
+# direction. If any cached keybind has died since it was cached, that toggle
+# kills the compositor. The plugin wraps the call in `pcall` and Hyprland wraps
+# it in `guardedPCall`, and neither helps: a C++ null dereference is not a Lua
+# error.
+#
+# WHAT THIS DOES
+#
+# Prunes the dead entries out of those caches before anything toggles the
+# overlay, then verifies that none are left. If it cannot verify that, it
+# refuses, and the caller leaves the overlay alone rather than gambling the
+# session on it.
+#
+# The pruning also protects toggles that have nothing to do with Omashift, such
+# as pressing the overlay's own keybinding, because the landmine is in shared
+# state rather than in anything this game owns.
+#
+# Usage:
+#   omashift-guide-guard           # prune, verify, exit 0 if safe to toggle
+#   omashift-guide-guard --check   # verify only, never mutate
+#   omashift-guide-guard --quiet   # exit status only, no output
+#
+# Exit 0 means safe to toggle. Any other status means DO NOT touch the overlay.
+
+set -uo pipefail
+
+REPORT="${OMASHIFT_GUIDE_REPORT:-/tmp/omashift-guide-guard.txt}"
+DO_PRUNE=true
+QUIET=false
+
+for arg in "$@"; do
+  case "$arg" in
+    --check) DO_PRUNE=false ;;
+    --quiet) QUIET=true ;;
+    *) echo "omashift-guide-guard: unknown option: $arg" >&2; exit 2 ;;
+  esac
+done
+
+say() { $QUIET || echo "$@"; }
+warn() { $QUIET || echo "$@" >&2; }
+
+command -v hyprctl >/dev/null 2>&1 || {
+  warn "keybinding guide: hyprctl not found, refusing to toggle the overlay"
+  exit 1
+}
+
+# The fix landed upstream in d10194c6 (PR #15568) on 2026-08-05, which is the
+# same day v0.56.2 was tagged, so it just missed the release. Anything newer than
+# 0.56.2 has it and needs none of this. A -git build reporting an old version
+# gets defended unnecessarily, which costs nothing: the prune is harmless.
+hypr_version() {
+  hyprctl version 2>/dev/null | sed -n '1s/.*Hyprland v\{0,1\}\([0-9][0-9.]*\).*/\1/p'
+}
+
+hypr_is_fixed() {
+  local v
+  v=$(hypr_version)
+  [[ -n $v ]] || return 1
+  [[ $v == "0.56.2" ]] && return 1
+  [[ $(printf '%s\n0.56.2\n' "$v" | sort -V | tail -1) == "$v" ]]
+}
+
+if hypr_is_fixed; then
+  say "keybinding guide: Hyprland $(hypr_version) has the keybind fix, no guard needed"
+  exit 0
+fi
+
+# A nonce, so a silently failed eval cannot leave us reading an old report and
+# calling it a pass. The report has to be written by THIS run.
+NONCE="$$-${SRANDOM:-$RANDOM}"
+rm -f "$REPORT"
+
+LUA=$(mktemp -t omashift-guide-guard-XXXXXX.lua) || {
+  warn "keybinding guide: cannot create a temp file, refusing to toggle the overlay"
+  exit 1
+}
+trap 'rm -f "$LUA"' EXIT
+
+# The three values the Lua needs are written as a prelude in Lua long-bracket
+# strings rather than substituted into the body. Long brackets need no escaping,
+# so a path with a quote or a backslash in it cannot break the chunk, and the
+# body below stays literal and reviewable.
+{
+  printf 'local REPORT   = [==[%s]==]\n' "$REPORT"
+  printf 'local NONCE    = [==[%s]==]\n' "$NONCE"
+  printf 'local DO_PRUNE = %s\n' "$DO_PRUNE"
+  cat <<'LUA'
+-- Prune expired keybind objects out of the keybinding-guide plugin's caches.
+--
+-- SAFETY RULE, and it is the whole reason this file can exist: the ONLY thing
+-- done to a keybind userdata here is tostring(). That routes to keybindToString
+-- in Hyprland's LuaKeybind.cpp, which is one of only two functions in that file
+-- that null-check the locked pointer correctly. It prints "HL.Keybind(expired)"
+-- rather than crashing, which makes it a safe oracle for "is this one dead".
+--
+-- Every OTHER keybind method -- set_enabled, is_enabled, remove, and every field
+-- read through __index -- dereferences null on an expired keybind and takes the
+-- compositor down. Do not add one to this file.
+
+local have_debug = type(debug) == "table" and type(debug.getupvalue) == "function"
+local plugin     = _G.omarchy_keybinding_guide_set_open ~= nil
+                   or _G.omarchy_keybinding_guide_capture_bindings ~= nil
+
+local tables, keybinds, pruned, remaining = 0, 0, 0, 0
+local notes = {}
+
+-- nil  = not a keybind object
+-- true = a keybind whose underlying keybind is gone
+local function is_expired(v)
+  if type(v) ~= "userdata" then return nil end
+  local ok, s = pcall(tostring, v)
+  if not ok or type(s) ~= "string" then return nil end
+  if not s:find("HL.Keybind", 1, true) then return nil end
+  return s:find("expired", 1, true) ~= nil
+end
+
+-- Both caches are reached from _G: one directly, one through the upvalue chain
+-- of the plugin's own set_open closure. The two entry points meet at the same
+-- table for capture_bindings, which is why traversal has to dedupe by identity.
+local function traverse(visit)
+  local seen_t, seen_f = {}, {}
+
+  local function do_table(name, t)
+    if type(t) ~= "table" or seen_t[t] then return end
+    seen_t[t] = true
+    visit(name, t)
+  end
+
+  local function do_fn(name, f, depth)
+    if type(f) ~= "function" or depth > 5 or seen_f[f] or not have_debug then return end
+    seen_f[f] = true
+    local i = 1
+    while true do
+      local uname, uval = debug.getupvalue(f, i)
+      if uname == nil then break end
+      if type(uval) == "table" then
+        do_table(name .. "." .. uname, uval)
+      elseif type(uval) == "function" then
+        do_fn(name .. "." .. uname, uval, depth + 1)
+      end
+      i = i + 1
+    end
+  end
+
+  do_table("capture_bindings", _G.omarchy_keybinding_guide_capture_bindings)
+  do_fn("set_open", _G.omarchy_keybinding_guide_set_open, 0)
+  do_fn("set_pointer_capture", _G.omarchy_keybinding_guide_set_pointer_capture, 0)
+end
+
+-- Compacted IN PLACE. The plugin captured these tables as closure locals, so
+-- replacing the table would leave the closure walking the old one and defeat the
+-- whole exercise. Non-keybind values are carried through untouched.
+local function prune_table(name, t)
+  local n = #t
+  local keep, seen_kb, dead = {}, 0, 0
+
+  for i = 1, n do
+    local v = t[i]
+    local e = is_expired(v)
+    if e == nil then
+      keep[#keep + 1] = v
+    else
+      seen_kb = seen_kb + 1
+      if e then dead = dead + 1 else keep[#keep + 1] = v end
+    end
+  end
+
+  if seen_kb == 0 then return end
+  pruned = pruned + dead
+
+  if dead > 0 then
+    for i = 1, n do t[i] = nil end
+    for i = 1, #keep do t[i] = keep[i] end
+    notes[#notes + 1] = ("%s: %d keybinds, %d expired removed"):format(name, seen_kb, dead)
+  end
+end
+
+-- Runs after the prune, so these counts describe the FINAL state of the caches.
+-- That is what makes --check, which never prunes, report the same shape.
+local function count_table(name, t)
+  local seen_kb = 0
+  for i = 1, #t do
+    local e = is_expired(t[i])
+    if e ~= nil then
+      seen_kb = seen_kb + 1
+      if e then
+        remaining = remaining + 1
+        notes[#notes + 1] = ("%s[%d] still expired"):format(name, i)
+      end
+    end
+  end
+  if seen_kb > 0 then
+    tables   = tables + 1
+    keybinds = keybinds + seen_kb
+  end
+end
+
+if DO_PRUNE then traverse(prune_table) end
+traverse(count_table)
+
+-- Verified means "every cache the plugin will walk was reachable from here".
+-- Without the debug library the scroll_bindings table is a closure local with no
+-- path to it, so nothing can be promised and the caller must not toggle.
+local verified = (not plugin) or have_debug
+
+local out = io.open(REPORT, "w")
+if out then
+  out:write("nonce=", NONCE, "\n")
+  out:write("debug=", have_debug and "yes" or "no", "\n")
+  out:write("plugin=", plugin and "yes" or "no", "\n")
+  out:write("verified=", verified and "yes" or "no", "\n")
+  out:write("pruned=", tostring(pruned), "\n")
+  out:write("keybinds=", tostring(keybinds), "\n")
+  out:write("tables=", tostring(tables), "\n")
+  out:write("remaining=", tostring(remaining), "\n")
+  for _, n in ipairs(notes) do out:write("note=", n, "\n") end
+  out:close()
+end
+LUA
+} > "$LUA"
+
+hyprctl eval "dofile('$LUA')" >/dev/null 2>&1
+
+if [[ ! -r $REPORT ]]; then
+  warn "keybinding guide: guard could not run, leaving the overlay alone"
+  exit 1
+fi
+
+field() { sed -n "s/^$1=//p" "$REPORT" | head -1; }
+
+if [[ $(field nonce) != "$NONCE" ]]; then
+  warn "keybinding guide: guard report is stale, leaving the overlay alone"
+  exit 1
+fi
+
+# A field that is missing or not a plain number is treated as the unsafe value,
+# never as zero. A malformed report is a reason to refuse, not to assume.
+num() { # <field> <value to use when it is not a number>
+  local v
+  v=$(field "$1")
+  [[ $v =~ ^[0-9]+$ ]] && echo "$v" || echo "$2"
+}
+
+pruned=$(num pruned 0)
+remaining=$(num remaining 1)
+verified=$(field verified)
+
+if (( pruned > 0 )); then
+  say "keybinding guide: pruned $pruned dead keybind(s) that would have crashed Hyprland"
+fi
+
+if [[ $verified != "yes" ]]; then
+  warn "keybinding guide: cannot verify the plugin's keybind caches (debug library unavailable)"
+  warn "  Leaving the overlay alone. Toggling it could segfault Hyprland."
+  exit 1
+fi
+
+if (( remaining != 0 )); then
+  warn "keybinding guide: $remaining expired keybind(s) still cached, leaving the overlay alone"
+  warn "  Toggling it would call set_enabled() on a destroyed keybind and segfault"
+  warn "  Hyprland. See omarchy/hyprland-lua-keybind-crash.md."
+  warn "  Restart Hyprland to clear them. 'hyprctl reload' is NOT known to help,"
+  warn "  because the plugin's caches live in a Lua global that survives a reload."
+  exit 1
+fi
+
+exit 0

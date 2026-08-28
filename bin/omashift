@@ -1,0 +1,753 @@
+#!/bin/bash
+
+# Omashift launcher. Stages the engine, loads it into Hyprland, opens the
+# display, and starts a stage.
+#
+#   omashift            # 10-prompt stage
+#   omashift 5          # 5-prompt stage
+#   omashift --course blind-spots 6    # drill what you actually miss
+#   omashift --stop     # retire and unload
+#
+# Nothing is written to your Hyprland config: the engine is loaded transiently
+# with `hyprctl eval`, so `hyprctl reload` is a complete uninstall.
+
+set -euo pipefail
+
+# readlink -f, because this is invoked through a symlink on PATH. Without it
+# $0 is ~/.local/bin/omashift and HERE resolves to ~/.local, so nothing finds
+# lib/, which is exactly what installing it revealed.
+HERE=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
+BASE="${OMASHIFT_BASE:-$HOME/.local/share/omashift}"
+STATE="${OMASHIFT_STATE:-/tmp/omashift-state.txt}"
+
+# EVERY LAUNCH LEAVES A LINE BEHIND.
+#
+# This is normally run from a keybinding, so stdout and stderr both go nowhere,
+# and a failure was reconstructible only from a notification that may or may not
+# still be on screen and carries no timestamp. Asked "did it fail, and when",
+# the honest answer was that nobody could tell.
+#
+# Every launch, not only the failures. A log that only records disasters cannot
+# answer "was this the run that broke it", and the interesting question is
+# almost always about the run before.
+#
+# Truncated rather than rotated: a keybinding trainer does not need a logging
+# policy, and a file that grows forever is a different bug.
+LOG="$BASE/launch.log"
+LOG_MAX_LINES=500
+
+log_line() {
+  mkdir -p "$BASE" 2>/dev/null || return 0
+  printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$LOG" 2>/dev/null || return 0
+  local n
+  n=$(wc -l < "$LOG" 2>/dev/null || echo 0)
+  if (( n > LOG_MAX_LINES )); then
+    tail -n $(( LOG_MAX_LINES / 2 )) "$LOG" > "$LOG.trim" 2>/dev/null \
+      && mv -f "$LOG.trim" "$LOG" 2>/dev/null
+  fi
+}
+
+STATE_JSON="${OMASHIFT_STATE_JSON:-/tmp/omashift-state.json}"
+
+GUIDE="$HOME/.config/omarchy/plugins/io.github.ctl0v0.keybinding-guide/bin/keybinding-guide-toggle"
+
+# Restore the hint overlay to whatever it was BEFORE play, never blindly on:
+# some players keep it off, and re-enabling it would be a real bug. The logic
+# lives in its own script because the ENGINE needs it too. See
+# bin/omashift-guide-restore. Two copies would have drifted.
+restore_guide() { "$HERE/bin/omashift-guide-restore"; }
+
+# List courses by ASKING core, including whatever the user added. The usage text
+# used to name them inline, which is the same drift the difficulty presets avoid:
+# a course added in Lua would not have appeared in the help.
+# What you have given up on, and how to take it back.
+#
+# Skipping the same action twice retires it, which is the point: a trainer that
+# keeps asking a question you have twice said you cannot answer is not training
+# anything. But nothing should be one-way, and "delete your entire history" is
+# not an undo.
+# The log, for when something went wrong and the toast is long gone.
+if [[ ${1:-} == "--log" ]]; then
+  if [[ -r $LOG ]]; then
+    tail -n "${2:-40}" "$LOG"
+  else
+    echo "no launches recorded yet at $LOG"
+  fi
+  exit 0
+fi
+
+if [[ ${1:-} == "--retired" ]]; then
+  HIST="${OMASHIFT_HISTORY:-${OMASHIFT_BASE:-$HOME/.local/share/omashift}/history.jsonl}"
+  if [[ ! -r $HIST ]]; then
+    echo "nothing retired yet: no history at $HIST"
+    exit 0
+  fi
+  lua - "$HERE" "$HIST" <<'RETIRED'
+package.path = arg[1] .. "/lib/?.lua;" .. package.path
+local core = require("core")
+local f = assert(io.open(arg[2])); local text = f:read("*a"); f:close()
+
+local rows = {}
+for description, n in pairs(core.retired_actions(text)) do
+  rows[#rows + 1] = { d = description, n = n }
+end
+table.sort(rows, function(a, b) return a.d < b.d end)
+
+if #rows == 0 then
+  print("nothing is out of rotation.")
+  print()
+  print(("Skip the same note %d times and it stops being asked."):format(
+    core.RETIRE_AFTER_SKIPS))
+  return
+end
+
+print("out of rotation:")
+print()
+for _, r in ipairs(rows) do
+  print(("  %-42s skipped %d times"):format(r.d, r.n))
+end
+print()
+print("These are not asked by any course. To put one back:")
+print("  omashift --restore \"Extract text (OCR) from screenshot\"")
+print("  omashift --restore --all")
+RETIRED
+  exit 0
+fi
+
+# Take one back. Rewrites the history, dropping the SKIP records for that
+# action and nothing else, so the retirement is undone without losing a single
+# thing you actually answered. The previous file is kept beside it.
+if [[ ${1:-} == "--restore" ]]; then
+  HIST="${OMASHIFT_HISTORY:-${OMASHIFT_BASE:-$HOME/.local/share/omashift}/history.jsonl}"
+  [[ -r $HIST ]] || { echo "no history at $HIST" >&2; exit 1; }
+  target=${2:-}
+  [[ -n $target ]] || {
+    echo 'usage: omashift --restore "<description>"   |   omashift --restore --all' >&2
+    exit 2
+  }
+  cp -f "$HIST" "$HIST.bak" || exit 1
+  python3 - "$HIST" "$target" <<'RESTORE' || { mv -f "$HIST.bak" "$HIST"; exit 1; }
+import json, sys, pathlib
+
+path, target = pathlib.Path(sys.argv[1]), sys.argv[2]
+every = target == "--all"
+kept, dropped = [], 0
+
+for raw in path.read_text().splitlines():
+    if not raw.strip():
+        continue
+    try:
+        rec = json.loads(raw)
+    except ValueError:
+        # A line this script cannot read is a line it has no business deleting.
+        kept.append(raw)
+        continue
+    answers = rec.get("answers")
+    if isinstance(answers, list):
+        before = len(answers)
+        rec["answers"] = [
+            a for a in answers
+            if not (a.get("outcome") == "skipped"
+                    and (every or a.get("description") == target))
+        ]
+        dropped += before - len(rec["answers"])
+    kept.append(json.dumps(rec, separators=(",", ":")))
+
+path.write_text("\n".join(kept) + ("\n" if kept else ""))
+print(f"removed {dropped} skip record(s)")
+if dropped == 0:
+    print("nothing matched, so nothing changed")
+RESTORE
+  echo "previous history kept at $HIST.bak"
+  exit 0
+fi
+
+if [[ ${1:-} == "--courses" || ${1:-} == "courses" ]]; then
+  lua - "$HERE" "${XDG_CONFIG_HOME:-$HOME/.config}/omashift/courses.lua" <<'LUA' || {
+package.path = arg[1] .. "/lib/?.lua;" .. package.path
+local core = require("core")
+local _, problems = require("courses-file").merge(core, arg[2])
+for _, why in ipairs(problems) do io.stderr:write("  ignored: ", why, "\n") end
+for _, name in ipairs(core.course_names()) do
+  local c = core.COURSES[name]
+  print(string.format("  %-14s %-22s %s", name, core.course_label(name),
+    c.dynamic and "(built from your history)" or (c.note or "")))
+end
+print("\n  Add your own in " .. arg[2])
+LUA
+    echo "  (needs the 'lua' interpreter to list courses)" >&2; exit 1; }
+  exit 0
+fi
+
+# --- the start gate ---------------------------------------------------------
+#
+# Pressing the launch key a second time STARTS the armed stage. That is the whole
+# gate: no global binding is added, nothing is suppressed, and there is no way to
+# strand a keyboard, which every binding-based design risks by construction.
+#
+# It also fixes something that was already wrong: pressing the launch key twice
+# used to arm a second stage on top of the first.
+# Fail where the player can see it.
+#
+# THIS SCRIPT IS USUALLY RUN FROM A KEYBINDING, and a keybinding has no terminal.
+# Every `echo >&2` in here goes nowhere in the case that matters, so a failure
+# looks exactly like a key that does nothing, which is the same symptom as the
+# binding not existing. A notification costs nothing and turns "it will not
+# start" into a sentence.
+die() {
+  local headline=$1 detail=${2:-}
+  echo "$headline${detail:+: $detail}" >&2
+  # The whole detail, on one line, so grep finds it. The notification below is
+  # truncated to fit a toast; this is not.
+  log_line "FAILED: $headline${detail:+: ${detail//$'\n'/ | }}"
+  # Only when there is no terminal to print to. In a shell the text above is
+  # better than a toast that disappears.
+  if [[ ! -t 2 ]] && command -v notify-send >/dev/null 2>&1; then
+    # NORMAL, not critical. A critical notification never expires on its own,
+    # and the first version of this left a failed-launch error sitting on both
+    # monitors twenty minutes after the launch it was about, outliving the
+    # problem and every attempt since. A launch failure is worth interrupting
+    # for; it is not worth a permanent fixture on someone's desktop.
+    notify-send -u normal -t 20000 -a Omashift "Omashift: $headline" \
+      "${detail:0:400}" 2>/dev/null || true
+  fi
+  exit 1
+}
+
+ARMED="$BASE/armed"
+
+# The same options, kept after the stage fires.
+#
+# `armed` is CONSUMED when a stage starts, which is correct: it is the thing
+# that says "the next press means go". But it also means that once you have
+# played, there is nothing left to rebuild the menu from, so leaving the results
+# page had only one destination and it was out of the app. This is what lets
+# ESCAPE on the results take you back to the menu with your course, length and
+# difficulty still set, ready to press ENTER again.
+LAST="$BASE/last"
+ARM_MAX_AGE=1800     # 30 min. Older than this and the arm is abandoned, not waiting.
+
+disarm() { rm -f "$ARMED"; }
+
+
+# Tracked by PID FILE, never by `pgrep -f quickshell...`. That pattern matches
+# any process whose command line merely mentions it, including the very shell
+# running this script, and the display already learned that the hard way.
+# The overlay's paths. These sat under a comment block about choosing between
+# two displays, and went with it when that choice was removed.
+QML_DIR="$HERE/qml"
+QML_PID="$BASE/qml.pid"
+QML_LOG="$BASE/qml.log"
+
+qml_running() {
+  [[ -r $QML_PID ]] || return 1
+  local pid; pid=$(cat "$QML_PID" 2>/dev/null) || return 1
+  [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null || return 1
+  grep -q quickshell "/proc/$pid/cmdline" 2>/dev/null   # not a recycled pid
+}
+
+start_qml() {
+  command -v quickshell >/dev/null || { echo "quickshell not installed" >&2; return 1; }
+  # ALWAYS restart, the same as the terminal display and for the same reason.
+  #
+  # quickshell reads the QML straight from the repo, so a live overlay is running
+  # whatever the file said when it started. Reusing it meant a change to
+  # Surface.qml was silently untested: you edit, you launch, and you are shown
+  # the old build with nothing anywhere to say so. That is the same trap as a
+  # stale staged engine, and it cost a round of debugging on the keyboard-focus
+  # fix.
+  if qml_running; then
+    kill "$(cat "$QML_PID" 2>/dev/null)" 2>/dev/null || true
+    rm -f "$QML_PID"
+    sleep 0.3
+  fi
+  # Keep the log. A QML error otherwise means an overlay that simply never
+  # appears, with nothing anywhere to say why.
+  # The overlay calls back to us when the player leaves, so tell it where we
+  # are rather than making it guess.
+  OMASHIFT_BIN="$(readlink -f "${BASH_SOURCE[0]}")" \
+    setsid quickshell -p "$QML_DIR/shell.qml" >"$QML_LOG" 2>&1 &
+  local pid=$!
+  disown 2>/dev/null || true
+  echo "$pid" > "$QML_PID"
+  # Give it long enough to fail. A config error exits almost immediately, and
+  # reporting success for a dead overlay is the failure mode worth avoiding.
+  sleep 1.5
+  if ! qml_running; then
+    echo "the overlay failed to start. see $QML_LOG" >&2
+    grep -iE "error" "$QML_LOG" 2>/dev/null | head -3 >&2
+    rm -f "$QML_PID"
+    return 1
+  fi
+}
+
+stop_qml() {
+  if qml_running; then kill "$(cat "$QML_PID")" 2>/dev/null || true; fi
+  rm -f "$QML_PID"
+  # The overlay hides when the document goes away, which is also what stops a
+  # stale results page hanging over the desktop after --stop.
+  rm -f "${OMASHIFT_STATE_JSON:-/tmp/omashift-state.json}"
+}
+
+# Fire an armed stage if there is a live one. Returns 1 if there was nothing to
+# fire, so the caller falls through to arming.
+fire_if_armed() {
+  [[ -r $ARMED ]] || return 1
+  local age start
+  age=$(( $(date +%s) - $(stat -c %Y "$ARMED" 2>/dev/null || echo 0) ))
+  if (( age > ARM_MAX_AGE )); then
+    echo "previous arm was ${age}s ago. starting fresh."
+    disarm; return 1
+  fi
+  # Compose the call HERE, from the options on disk, so whatever last edited
+  # them is what runs. Reading with a `while read` rather than sourcing: this
+  # file is written by a menu as well as by us, and sourcing it would execute
+  # whatever ended up in it.
+  local a_length="" a_course="" a_diff="" a_mods="" a_full="" a_idle=""
+  local key value
+  while IFS='=' read -r key value; do
+    case "$key" in
+      length)       a_length=$value ;;
+      course)       a_course=$value ;;
+      difficulty)   a_diff=$value ;;
+      hint_mods)    a_mods=$value ;;
+      hint_full)    a_full=$value ;;
+      idle_release) a_idle=$value ;;
+    esac
+  done < "$ARMED"
+
+  # A length that is not a number would reach the engine as Lua and run there.
+  [[ $a_length =~ ^[0-9]+$ ]] || { disarm; return 1; }
+  [[ $a_course =~ ^[a-z0-9-]*$ ]] || { disarm; return 1; }
+
+  local o_mods="" o_full="" o_idle="" o_diff=""
+  [[ -n $a_mods ]] && o_mods=", codriver_mods_ms = $a_mods"
+  [[ -n $a_full ]] && o_full=", codriver_full_ms = $a_full"
+  [[ -n $a_idle ]] && o_idle=", idle_release_ms = $a_idle"
+  [[ -n $a_diff ]] && o_diff=", difficulty = '$a_diff'"
+
+  start="_G.omashift_start({ length = $a_length, course = '$a_course'$o_mods$o_full$o_idle$o_diff })"
+  [[ -n $start ]] || { disarm; return 1; }
+
+  # KEEP the engine's reply. Throwing it away is what made a Lua syntax error in
+  # the start call indistinguishable from a game waiting patiently for a key,
+  # and it cost a live debugging session to find.
+  local reply
+  # `|| true` because of `set -e`, and this is not a style choice. A command
+  # substitution that exits non-zero aborts the script AT THE ASSIGNMENT, so the
+  # check written on the next line never runs and the message it was written to
+  # print never prints. hyprctl exits 7 on a Lua error, which is exactly the case
+  # every one of these was added to report, so the reporting was dead code in the
+  # only situation it existed for. The symptom was a launcher that stopped with no
+  # output at all.
+  reply=$(hyprctl eval "$start" 2>&1) || true
+
+  # Verify the STAGE STARTED, not that the submap is engaged.
+  #
+  # This used to check `hyprctl submap == omashift`, which is a PRECONDITION that
+  # may already be true, not an EFFECT of the call just made. A submap left
+  # engaged by an earlier stage satisfied it on the first iteration, so a fire
+  # that did nothing at all printed "go." and disarmed. The check confirmed the
+  # thing that was already wrong.
+  #
+  # A countdown is proof: only omashift_start publishes it, and it is the first
+  # thing a live stage draws.
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    if grep -q '"screen":"countdown"' "$STATE_JSON" 2>/dev/null; then
+      disarm; log_line "started: $a_course ${a_length} notes, $a_diff"; echo "go."; return 0
+    fi
+    sleep 0.3
+  done
+  echo "the armed stage did not start. re-arming." >&2
+  [[ $reply == "ok" ]] || echo "  engine said: $reply" >&2
+  disarm
+  return 1
+}
+
+# --- modes the MENU calls back with ---------------------------------------
+#
+# The welcome screen is a menu now, and a menu has to be able to act. It cannot
+# run Lua and should not know how, so it calls back here by name. Each of these
+# is small on purpose: the overlay decides WHAT the player asked for, this
+# decides how to do it.
+
+# Fire the armed stage. What the second press of the launch chord used to do,
+# except the menu's ENTER does it now, which is the whole reason the welcome
+# screen can take the keyboard at all.
+# Straight into another stage, with everything you just played still set.
+#
+# ENTER on the results page. Going again is the ordinary thing to want there,
+# and routing it through the menu made the core loop cost two presses and a
+# screen nobody asked to see. `armed` is consumed when a stage starts, so this
+# rebuilds it from the copy that outlives firing, then fires.
+if [[ ${1:-} == "--again" ]]; then
+  if [[ ! -r $ARMED && -r $LAST ]]; then
+    cp -f "$LAST" "$ARMED" || true
+  fi
+  fire_if_armed && exit 0
+  # Nothing to repeat. The menu is the honest fallback: it can always be
+  # rebuilt, and it is where the player would have had to go anyway.
+  log_line "nothing to repeat, falling back to the menu"
+  exec "$(readlink -f "${BASH_SOURCE[0]}")" --menu
+fi
+
+if [[ ${1:-} == "--go" ]]; then
+  fire_if_armed && exit 0
+  echo "nothing armed to start" >&2
+  exit 1
+fi
+
+# Cycle the difficulty and redraw. Writes the ARM, not the config: a change made
+# for this run should not silently become the permanent default.
+if [[ ${1:-} == "--cycle-difficulty" ]]; then
+  [[ -r $ARMED ]] || { echo "nothing armed" >&2; exit 1; }
+  cur=$(sed -n 's/^difficulty=//p' "$ARMED")
+  case "${cur:-medium}" in
+    easy)   next=medium ;;
+    medium) next=hard ;;
+    *)      next=easy ;;
+  esac
+  sed -i "s/^difficulty=.*/difficulty=$next/" "$ARMED"
+  cp -f "$ARMED" "$LAST" 2>/dev/null || true
+  a_len=$(sed -n 's/^length=//p' "$ARMED")
+  a_course=$(sed -n 's/^course=//p' "$ARMED")
+  a_mods=$(sed -n 's/^hint_mods=//p' "$ARMED")
+  hyprctl eval \
+    "_G.omashift_preview('$a_len', '$a_mods', '$a_course', '$next')" >/dev/null 2>&1
+  exit 0
+fi
+
+# Cycle the course, and the stage length. Arrow keys on the menu, because these
+# are values in a list rather than destinations: letters go somewhere, arrows
+# change what you are looking at.
+#
+# Both write the ARM, not the config, for the same reason difficulty does: a
+# choice made for this run should not quietly become the permanent default.
+if [[ ${1:-} == "--cycle-course" ]]; then
+  [[ -r $ARMED ]] || { echo "nothing armed" >&2; exit 1; }
+  dir="${2:-next}"
+  cur=$(sed -n 's/^course=//p' "$ARMED")
+  # Ask core for the list rather than keeping one here. A course added in
+  # courses.lua has to appear on the menu without this script learning its name.
+  #
+  # AND THE FILE HAS TO BE READ FOR THAT TO BE TRUE. This asked a fresh Lua
+  # state, which knows only the shipped courses, so `C` cycled past every course
+  # anyone had written for themselves -- listed everywhere, selectable nowhere.
+  # lib/courses-file.lua is the one loader now, shared with --courses and the
+  # engine, so the three cannot drift apart again.
+  mapfile -t courses < <(lua - "$HERE" <<'LUA'
+package.path = arg[1] .. "/lib/?.lua;" .. package.path
+local core = require("core")
+require("courses-file").merge(core, require("courses-file").path())
+for _, n in ipairs(core.course_names()) do print(n) end
+LUA
+)
+  (( ${#courses[@]} )) || { echo "no courses" >&2; exit 1; }
+  idx=0
+  for i in "${!courses[@]}"; do [[ ${courses[$i]} == "$cur" ]] && idx=$i; done
+  if [[ $dir == prev ]]; then
+    idx=$(( (idx - 1 + ${#courses[@]}) % ${#courses[@]} ))
+  else
+    idx=$(( (idx + 1) % ${#courses[@]} ))
+  fi
+  sed -i "s/^course=.*/course=${courses[$idx]}/" "$ARMED"
+  cp -f "$ARMED" "$LAST" 2>/dev/null || true
+  exec "$0" --menu
+fi
+
+if [[ ${1:-} == "--cycle-length" ]]; then
+  [[ -r $ARMED ]] || { echo "nothing armed" >&2; exit 1; }
+  cur=$(sed -n 's/^length=//p' "$ARMED")
+  [[ $cur =~ ^[0-9]+$ ]] || cur=10
+  if [[ ${2:-up} == down ]]; then next=$(( cur - 5 )); else next=$(( cur + 5 )); fi
+  # Bounded: a stage of nothing is not a stage, and past forty the SM-2 queue is
+  # re-asking more than it is asking.
+  (( next < 5 ))  && next=5
+  (( next > 40 )) && next=40
+  sed -i "s/^length=.*/length=$next/" "$ARMED"
+  cp -f "$ARMED" "$LAST" 2>/dev/null || true
+  exec "$0" --menu
+fi
+
+# Show the trophy case. The cabinet already knows how to publish itself, and
+# --publish rather than --visual because the overlay asking for it is the same
+# overlay that would be torn down and restarted.
+if [[ ${1:-} == "--cabinet" ]]; then
+  OMASHIFT_CABINET_BACK=menu "$HERE/bin/omashift-cabinet" --publish >/dev/null 2>&1
+  exit 0
+fi
+
+# Show the Logbook. Same shape as --cabinet above and for the same reason: the
+# overlay asking for it is the overlay that --visual would restart.
+if [[ ${1:-} == "--stats" ]]; then
+  OMASHIFT_STATS_BACK=menu "$HERE/bin/omashift-stats" --publish >/dev/null 2>&1
+  exit 0
+fi
+
+# Back to the welcome menu, from wherever. Re-renders it from the armed options
+# so a difficulty changed on the way out is still there when you come back.
+if [[ ${1:-} == "--menu" ]]; then
+  # Coming back after a stage: `armed` was consumed when it started, so rebuild
+  # it from the options that stage was played with. Anything else would send the
+  # player back to a menu that had forgotten what they just chose.
+  if [[ ! -r $ARMED && -r $LAST ]]; then
+    cp -f "$LAST" "$ARMED" || true
+  fi
+  [[ -r $ARMED ]] || { echo "nothing armed" >&2; exit 1; }
+  m_len=$(sed -n 's/^length=//p' "$ARMED")
+  m_course=$(sed -n 's/^course=//p' "$ARMED")
+  m_diff=$(sed -n 's/^difficulty=//p' "$ARMED")
+  m_mods=$(sed -n 's/^hint_mods=//p' "$ARMED")
+  hyprctl eval \
+    "_G.omashift_preview('$m_len', '$m_mods', '$m_course', '$m_diff')" >/dev/null 2>&1
+  log_line "back to the menu"
+  exit 0
+fi
+
+if [[ ${1:-} == "--stop" ]]; then
+  disarm
+  : # the display is torn down below, AFTER the engine has retired
+fi
+
+if [[ ${1:-} == "--stop" ]]; then
+  # RETIRE the stage, do not merely reset the submap. Resetting from outside
+  # left the stage object alive in the engine with its repaint and co-driver
+  # timers still running, so it kept publishing screens after the display was
+  # torn down, and a stale document reappeared behind the closing overlay.
+  # Retiring also persists the partial run, which a bare submap reset threw away.
+  hyprctl eval "_G.omashift_on_retire()" >/dev/null 2>&1 || true
+  # Belt and braces: if the engine is not loaded there is nothing to retire, and
+  # the submap still has to come back.
+  hyprctl eval "hl.dispatch(hl.dsp.submap('reset'))" >/dev/null 2>&1 || true
+  sleep 0.3
+  stop_qml
+  printf 'OMASHIFT\n\n  retired.\n' > "$STATE"
+  restore_guide
+  log_line "stopped"
+  echo "retired. run 'hyprctl reload' to unload the engine entirely."
+  exit 0
+fi
+
+# Default to the beginner course. The unfiltered bank is 52% three-modifier
+# combos, so serving it at random to a new player is unwinnable by construction.
+# Co-driver timing is a FEEL decision, not a constant, so it is configurable.
+# Precedence: flags > config file > defaults.
+CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/omashift/config"
+hint_mods=""
+hint_full=""
+idle_release=""
+# Just the NAME. The presets live in core.lua and nowhere else, so this script
+# never learns a threshold it would then have to be kept in sync with.
+difficulty=""
+# `display` is still accepted and ignored: the terminal renderer is gone, so
+# there is nothing to choose between. Declared rather than deleted because the
+# config is sourced, and an existing `display=qml` line would otherwise be an
+# unbound assignment nobody asked for.
+# shellcheck disable=SC2034  # accepted and ignored on purpose, see above
+display=""
+# shellcheck disable=SC1090
+[[ -r $CONFIG ]] && source "$CONFIG"
+
+course="daily-driver"
+if [[ ${1:-} == "--course" ]]; then course="${2:-daily-driver}"; shift 2; fi
+if [[ ${1:-} == "--all" ]]; then course=""; shift; fi
+while [[ ${1:-} == --hint-* || ${1:-} == "--idle-release" || ${1:-} == "--difficulty" \
+         || ${1:-} == "--easy" || ${1:-} == "--medium" || ${1:-} == "--hard" ]]; do
+  case "$1" in
+    --hint-mods) hint_mods="${2:-}"; shift 2 ;;
+    --hint-full) hint_full="${2:-}"; shift 2 ;;
+    --idle-release) idle_release="${2:-}"; shift 2 ;;
+    --difficulty) difficulty="${2:-}"; shift 2 ;;
+    # Shorthands, because this is the setting most likely to be changed on a
+    # whim and `--hard` is what a player will actually reach for.
+    --easy|--medium|--hard) difficulty="${1#--}"; shift ;;
+    *) break ;;
+  esac
+done
+
+length="${1:-10}"
+[[ $length =~ ^[0-9]+$ ]] || {
+  echo "usage: omashift [--course NAME|--all] [--easy|--medium|--hard]" >&2
+  echo "                [--hint-mods MS] [--hint-full MS] [--idle-release MS]" >&2
+  echo "                [n] | --stop" >&2
+  echo "       modes:   easy, medium (default), hard" >&2
+  echo "       run 'omashift --courses' to list courses" >&2
+  exit 1
+}
+
+# THE TRAP, and it has to be broken before anything else is attempted.
+#
+# A submap left engaged with no live stage captures the whole keyboard, and the
+# launch chord is IN the question bank. SUPER+ALT+O is a real binding, so the
+# game drills you on it. That means once the submap is stuck, pressing the launch
+# chord is answered as a pace note and the launcher never runs. The player sees a
+# frozen ready screen, presses the documented key, and nothing happens. There is
+# no way out from the keyboard except the panic chord, and no way to a terminal
+# because SUPER+RETURN is a pace note too.
+#
+# Retire rather than bare-reset: a stranded stage may still hold answers worth
+# persisting, and retiring is the path that saves them and restores the overlay.
+if [[ $(hyprctl submap 2>/dev/null) == omashift ]]; then
+  echo "a previous stage was still holding your keyboard. retiring it first." >&2
+  hyprctl eval "_G.omashift_on_retire()" >/dev/null 2>&1 || true
+  hyprctl eval "hl.dispatch(hl.dsp.submap('reset'))" >/dev/null 2>&1 || true
+  "$HERE/bin/omashift-guide-restore" >/dev/null 2>&1 || true
+  disarm
+  sleep 0.3
+  if [[ $(hyprctl submap 2>/dev/null) == omashift ]]; then
+    echo "could not release the keyboard. press SUPER+SHIFT+ESCAPE, then try again." >&2
+    exit 1
+  fi
+fi
+
+# Before staging anything: if a stage is already armed, this press is the GO.
+if fire_if_armed; then exit 0; fi
+
+# Stage the code and a freshly generated question bank.
+#
+# THE WHOLE LIBRARY, not a list of it. This was four named `cp` lines, and the
+# day lib/scene.lua was added it was not one of them: the engine loaded, hit
+# `require("scene")`, and the game stopped starting. From a keybinding there is
+# no terminal, so the error went nowhere and the symptom was a key that did
+# nothing.
+#
+# A list of files to copy has to be edited every time a file is added, and
+# nothing enforces it. A glob cannot be forgotten. inventory.lua is not in the
+# repo's lib/, so it is unaffected and is still generated below.
+mkdir -p "$BASE/lib"
+cp "$HERE"/lib/*.lua "$BASE/lib/"
+# The engine hands control back on its own now, and restoring the overlay is
+# part of that, so the script has to be somewhere the engine can reach.
+cp "$HERE/bin/omashift-guide-restore" "$BASE/omashift-guide-restore"
+chmod +x "$BASE/omashift-guide-restore"
+# The restore looks for the guard beside itself, so the guard has to be staged
+# too. Staging one without the other leaves the restore refusing every time.
+cp "$HERE/bin/omashift-guide-guard" "$BASE/omashift-guide-guard"
+chmod +x "$BASE/omashift-guide-guard"
+"$HERE/bin/omashift-inventory" --lua > "$BASE/lib/inventory.lua"
+count=$(grep -c '^  { combo' "$BASE/lib/inventory.lua" || true)
+echo "question bank: $count bindings"
+
+# The hint overlay reads key state directly, so a submap does not suppress it:
+# holding SUPER would show the answers. Record the prior state and restore it on
+# exit rather than blindly enabling it.
+#
+# Guarded, because turning it OFF is as dangerous as turning it back on: either
+# direction makes the plugin call set_enabled() on every keybind it has cached,
+# and one dead entry there segfaults Hyprland. See bin/omashift-guide-guard.
+# If the guard refuses, play proceeds with the overlay still up. That shows you
+# the answers, which spoils the stage, and a spoiled stage beats a lost session.
+if [[ -x $GUIDE ]]; then
+  # Only record the prior state if we have not already. Launching twice in a
+  # row would otherwise record "off" as the prior, because the first launch just
+  # turned it off, which is how a guide that was on ended up staying off.
+  [[ -r "$BASE/guide-prior.json" ]] || "$GUIDE" status > "$BASE/guide-prior.json" 2>/dev/null || true
+  if "$HERE/bin/omashift-guide-guard"; then
+    "$GUIDE" off >/dev/null 2>&1 || true
+    echo "keybinding guide: disabled for play"
+  else
+    echo "keybinding guide: LEFT ON. it is not safe to toggle right now." >&2
+    echo "  The overlay will show you the answers this stage." >&2
+  fi
+fi
+
+# The display MUST be open before the submap engages. Once it does, every
+# launcher binding is suppressed, including SUPER+RETURN, so there is no way
+# to open a terminal afterwards. This ordering is not cosmetic.
+# LOAD THE ENGINE FIRST, and check that it worked.
+#
+# This line was deleted by accident when the terminal display was removed: it sat
+# inside the block that managed the terminal, and went with it. Nothing noticed,
+# because the reply was thrown away. The launcher carried on, published against
+# whatever engine a previous session had left in the compositor, and the game
+# simply never started with no error anywhere. That is the exact failure the
+# `preview` call below already learned to check for, so this checks too.
+# `|| true` because of `set -e`, and this is not a style choice. A command
+# substitution that exits non-zero aborts the script AT THE ASSIGNMENT, so the
+# check written on the next line never runs and the message it was written to
+# print never prints. hyprctl exits 7 on a Lua error, which is exactly the case
+# every one of these was added to report, so the reporting was dead code in the
+# only situation it existed for. The symptom was a launcher that stopped with no
+# output at all.
+engine_reply=$(hyprctl eval "dofile('$BASE/lib/engine.lua')" 2>&1) || true
+if [[ $engine_reply != "ok" ]]; then
+  die "the engine did not load" "$engine_reply"
+fi
+log_line "engine loaded, $count bindings"
+
+# The overlay, always. There is no second display any more.
+#
+# A terminal renderer shipped first and was the right call at the time: it made
+# the game playable while the overlay was still being built, and every stage in
+# this project's first week was played on it. It is gone now. Keeping it meant
+# resolving the user's terminal through xdg-terminal-exec, tracking its PID,
+# working out which workspace it landed on and focusing it there, restarting it
+# when stale, and a config switch to choose between the two. That is a lot of
+# machinery for a renderer nobody looks at once the overlay works.
+#
+# The TEXT screens are not gone: lib/screens.lua still renders every screen, and
+# it is what the golden tests assert against and what `omashift-cabinet` and
+# `omashift-stats` print. What went is the window, and later the file behind it:
+# the engine wrote its text to /tmp on every repaint for a reader that no longer
+# existed.
+start_qml || exit 1
+echo "display: quickshell overlay"
+
+
+# Load the engine, but do NOT start. The display arms itself and calls
+# omashift_start only once the player presses a key, so game mode, and the
+# keybinding suppression that comes with it, begins when they are actually
+# there.
+: # engine already loaded above
+
+echo "course: ${course:-all bindings}"
+echo "difficulty: ${difficulty:-medium}"
+if [[ -n ${hint_mods:-} || -n ${hint_full:-} ]]; then
+  echo "co-driver: overridden. modifiers ${hint_mods:-preset}ms, full combo ${hint_full:-preset}ms"
+else
+  echo "co-driver: set by the ${difficulty:-medium} preset"
+fi
+if [[ ${idle_release:-} == "0" ]]; then
+  echo "idle release: off. you keep the keyboard until you retire"
+else
+  echo "idle release: ${idle_release:-60000}ms unanswered hands your keys back"
+fi
+# The armed stage, stored as OPTIONS rather than as the call that starts them.
+#
+# It used to hold a composed Lua expression, which meant the only thing that
+# could change a setting was whatever composed it. Storing the values instead
+# makes the arm editable: a menu can change the difficulty or the length without
+# knowing a word of Lua, and firing composes the call at the last moment.
+#
+# Plain key=value, one per line, no quoting rules to get wrong. Blank means
+# "unset, let the engine decide", which is not the same as zero and is why the
+# writer keeps empty keys rather than dropping them.
+write_arm() {
+  {
+    echo "length=${length}"
+    echo "course=${course}"
+    echo "difficulty=${difficulty:-}"
+    echo "hint_mods=${hint_mods:-}"
+    echo "hint_full=${hint_full:-}"
+    echo "idle_release=${idle_release:-}"
+  } > "$ARMED"
+  # And a copy that outlives firing, so the menu can be rebuilt after a stage.
+  cp -f "$ARMED" "$LAST" 2>/dev/null || true
+}
+write_arm
+
+# Render the ready screen. The LAUNCHER does this, not the display. The
+# terminal used to, which meant the overlay had nothing to show and stayed
+# invisible with no error anywhere. A display should render state, not ask the
+# engine to produce it.
+preview=$(hyprctl eval \
+  "_G.omashift_preview('$length', '$hint_mods', '$course', '$difficulty')" 2>&1) || true
+[[ $preview == "ok" ]] || echo "could not render the ready screen: $preview" >&2
+
+echo
+echo "  READY. press the same key again to start."
+echo "  (SUPER+ALT+O, or run 'omashift')"
+echo
+echo "your keybindings stay live until you do."
+echo "SUPER+SHIFT+ESCAPE retires a running stage; 'omashift --stop' cancels."

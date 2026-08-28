@@ -1,0 +1,44 @@
+#!/bin/bash
+# Run every Omashift test suite. Exits non-zero if any suite fails.
+#
+# Usage: ./test/all
+#
+# Tests run entirely against fixtures, with no live Hyprland required, so this is
+# safe in CI and on a machine that is not running Omarchy. That is why `smoke`
+# is NOT named test-*.sh and is not picked up by the glob below: it drives a
+# real stage in a real compositor and has to be run deliberately.
+
+set -uo pipefail
+cd "$(dirname "$0")" || exit 1
+
+failed=0
+
+# THE SHAPE OF THE SUITES THEMSELVES, before any of them run.
+#
+# An assertion with an unterminated quote does not fail. Bash keeps reading
+# until it finds a matching quote further down, so the needle swallows the
+# assertions after it and then matches anyway, because `grep -F` reads a newline
+# in the pattern as an alternative. The suite goes green, one check is testing
+# nonsense, and the ones it ate are gone. It happened three times in one day.
+if ! python3 lint-assertions.py test-*.sh; then
+  printf '\033[31man assertion does not parse on its own line (see above)\033[0m\n'
+  failed=1
+fi
+
+for suite in test-*.sh; do
+  bash "$suite" || failed=1
+  echo
+done
+
+for suite in test-*.lua; do
+  lua "$suite" || failed=1
+  echo
+done
+
+if (( failed )); then
+  printf '\033[31m=== SUITE FAILED ===\033[0m\n'
+  exit 1
+fi
+printf '\033[32m=== all suites passed ===\033[0m\n'
+printf 'engine.lua runs here too, against a stubbed compositor (test-engine.lua).\n'
+printf './test/smoke adds what only a real Hyprland can prove.\n'

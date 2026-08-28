@@ -1,0 +1,346 @@
+#!/bin/bash
+
+# Live-engine smoke test, the one thing `test/all` cannot do.
+#
+# WHY THIS EXISTS
+#
+# engine.lua is the half of Omashift that needs a running compositor, so it has
+# never been under test. Edits to it have silently vanished or broken FOUR times
+# a function called but never defined (twice), config dropped before reaching
+# its consumer (twice), and every one survived a fully green suite. The wiring
+# suite greps for call shapes, which catches a missing call but cannot catch a
+# call that runs and does the wrong thing.
+#
+# This drives a real stage through the real engine in the real compositor and
+# asserts what actually happened.
+#
+# WHAT IT DOES AND DOES NOT PROVE
+#
+# It answers by calling `_G.omashift_on_answer(combo)` directly, the same entry
+# point the submap's key closures call. So it exercises everything downstream of
+# a keypress: scoring, tiers, requeue, gearbox, persistence, the summary, and the
+# hand-back. It does NOT prove Hyprland matched the key to the binding, because
+# nothing here presses a key. That last inch is checked separately by counting
+# the submap's registered binds.
+#
+# ISOLATION, the rule that matters
+#
+# Everything runs against a throwaway OMASHIFT_BASE and its own state file. The
+# engine reads both from env at load, but it loads inside Hyprland, whose
+# environment this script cannot touch, so the paths are rewritten in a staged
+# COPY of engine.lua. A synthetic stage must never reach the real history.jsonl:
+# that file is the player's Blind Spots data, and polluting it with robot answers
+# would corrupt the course the game builds from it.
+#
+# Usage:  ./test/smoke          (needs a live Hyprland; test/all does not)
+
+set -uo pipefail
+cd "$(dirname "$0")" || exit 1
+source ./helpers.sh
+
+command -v hyprctl >/dev/null || { echo "smoke: no hyprctl, needs a live Hyprland" >&2; exit 2; }
+[[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} ]] || { echo "smoke: no Hyprland session" >&2; exit 2; }
+
+SMOKE_BASE=$(mktemp -d "${TMPDIR:-/tmp}/omashift-smoke.XXXXXX")
+SMOKE_STATE="$SMOKE_BASE/state.txt"
+SMOKE_JSON="$SMOKE_BASE/state.json"
+REAL_HISTORY="${OMASHIFT_BASE:-$HOME/.local/share/omashift}/history.jsonl"
+REAL_HISTORY_SUM_BEFORE=$(md5sum "$REAL_HISTORY" 2>/dev/null | cut -d' ' -f1 || echo none)
+REAL_CABINET="${XDG_STATE_HOME:-$HOME/.local/state}/omashift/trophies.json"
+REAL_CABINET_SUM_BEFORE=$(md5sum "$REAL_CABINET" 2>/dev/null | cut -d' ' -f1 || echo none)
+
+# Leave the desktop usable no matter how this exits. A smoke test that strands
+# the keyboard on failure is worse than no smoke test.
+cleanup() {
+  hyprctl dispatch 'hl.dsp.submap("reset")' >/dev/null 2>&1 || true
+  # The overlay check below starts a real shell; never leave one behind.
+  #
+  # By PID, not by pattern. `pkill -f omashift/qml/shell.qml` matches only an
+  # ABSOLUTE path, and this script launches with a relative one, so the pattern
+  # silently matched nothing and left a fullscreen overlay running on a live
+  # desktop. Five of them accumulated before anyone noticed.
+  [[ -n ${qml_check_pid:-} ]] && kill "$qml_check_pid" 2>/dev/null
+  [[ -n ${qml_check_pid:-} ]] && { sleep 0.2; kill -9 "$qml_check_pid" 2>/dev/null; }
+  true
+  rm -rf "$SMOKE_BASE"
+}
+trap cleanup EXIT INT TERM
+
+echo "smoke (live engine):"
+
+# --- stage an isolated engine ------------------------------------------------
+mkdir -p "$SMOKE_BASE/lib"
+# The whole library, for the reason the launcher does it: this was three named
+# files, and the day lib/scene.lua was added it was on neither list. engine.lua
+# is not copied here, it is rewritten below.
+cp ../lib/*.lua "$SMOKE_BASE/lib/"
+# STATE_DIR is rewritten for the same reason BASE is: the Cabinet is real
+# player progress, and a robot stage must not be able to award trophies into it.
+sed -e "s|^local BASE = .*|local BASE = \"$SMOKE_BASE\"|" \
+    -e "s|^local STATE = .*|local STATE = \"$SMOKE_STATE\"|" \
+    -e "s|^local STATE_DIR = .*|local STATE_DIR = \"$SMOKE_BASE/state\"|" \
+    -e "s|^local STATE_JSON = .*|local STATE_JSON = \"$SMOKE_JSON\"|" \
+    ../lib/engine.lua > "$SMOKE_BASE/lib/engine.lua"
+
+grep -q "^local BASE = \"$SMOKE_BASE\"$" "$SMOKE_BASE/lib/engine.lua" \
+  && _pass "engine is staged against a throwaway base" \
+  || _fail "engine is staged against a throwaway base" "rewritten BASE" "not rewritten"
+grep -q "^local STATE_DIR = \"$SMOKE_BASE/state\"$" "$SMOKE_BASE/lib/engine.lua" \
+  && _pass "the cabinet is staged somewhere throwaway too" \
+  || _fail "the cabinet is staged somewhere throwaway too" "rewritten STATE_DIR" "not rewritten"
+
+../bin/omashift-inventory --lua > "$SMOKE_BASE/lib/inventory.lua" 2>/dev/null
+
+# description -> combo, straight from the bank the engine will use.
+declare -A COMBO_OF
+while IFS=$'\t' read -r desc combo; do
+  [[ -n $desc ]] && COMBO_OF["$desc"]="$combo"
+done < <(sed -n 's/^  { combo = "\([^"]*\)".*description = "\([^"]*\)".*/\2\t\1/p' "$SMOKE_BASE/lib/inventory.lua")
+assert_ge "the question bank loaded" 20 "${#COMBO_OF[@]}"
+
+hyprctl eval "dofile('$SMOKE_BASE/lib/engine.lua')" >/dev/null 2>&1
+
+# --- helpers -----------------------------------------------------------------
+screen() { cat "$SMOKE_STATE" 2>/dev/null; }
+
+# Poll until the screen matches, or give up. Everything in the engine is timer
+# driven, with a 4s countdown and a 900ms settle, so every wait here is a real wait.
+wait_for() { # <regex> <seconds>
+  local deadline=$((SECONDS + ${2:-15}))
+  while ((SECONDS < deadline)); do
+    screen | grep -qE "$1" && return 0
+    sleep 0.2
+  done
+  return 1
+}
+
+current_note() { screen | sed -n 's/^ *>>  //p' | head -1; }
+
+# --- seed a ghost ------------------------------------------------------------
+# A deliberately slow UNASSISTED run, so the stage below has a personal best to
+# race and must beat it. Unassisted matters: an assisted stage cannot set a
+# best, so seeding one would leave the ghost empty and the assertions vacuous.
+{
+  printf '{"stamp":"seed","course":"all","difficulty":"medium","prompts":0,"base_prompts":0,'
+  printf '"requeues":0,"away":0,"correct":0,"offs":0,"points":0,"average_ms":null,'
+  printf '"assisted":false,"completed":true,"clean":false,"answers":['
+  first=1
+  for desc in "${!COMBO_OF[@]}"; do
+    ((first)) || printf ','
+    first=0
+    printf '{"combo":"%s","description":"%s","outcome":"correct","pressed":"%s","reaction_ms":9000}' \
+      "${COMBO_OF[$desc]}" "$desc" "${COMBO_OF[$desc]}"
+  done
+  printf ']}\n'
+} > "$SMOKE_BASE/history.jsonl"
+
+seeded=$(cd .. && lua -e "
+  package.path='lib/?.lua;'..package.path
+  local core=require('core')
+  local f=io.open('$SMOKE_BASE/history.jsonl'); local t=f:read('*a'); f:close()
+  local n=0; for _ in pairs(core.personal_bests(t)) do n=n+1 end; print(n)")
+assert_ge "the seeded ghost is readable" 20 "${seeded:-0}"
+
+# --- drive a full stage ------------------------------------------------------
+LENGTH=5
+MODE=hard   # deliberately not the default: a passing assertion below then
+            # proves the mode was PLUMBED, not that it happened to match.
+hyprctl eval "_G.omashift_start({ length = $LENGTH, course = 'daily-driver', idle_release_ms = 0, difficulty = '$MODE' })" >/dev/null 2>&1
+
+wait_for 'get ready|LFG' 5 && _pass "the stage opens on a countdown" \
+  || _fail "the stage opens on a countdown" "a countdown screen" "$(screen | head -3)"
+
+wait_for '>>  ' 12 && _pass "a pace note appears" \
+  || _fail "a pace note appears" "a prompt" "$(screen | head -6)"
+
+eq_submap=$(hyprctl submap)
+assert_eq "game mode is engaged while playing" "omashift" "$eq_submap"
+
+# The submap must actually carry the bindings, the half this harness cannot
+# reach by calling on_answer directly.
+bind_count=$(hyprctl binds -j 2>/dev/null | grep -c '"submap": *"omashift"' || echo 0)
+assert_ge "the submap registered its key bindings" 50 "$bind_count"
+
+answered=0; wrong_sent=0; saw_ghost=0
+while ((answered < LENGTH + 3)); do
+  screen | grep -q "STAGE COMPLETE" && break
+  note=$(current_note)
+  if [[ -z $note ]]; then sleep 0.2; continue; fi
+  combo="${COMBO_OF[$note]:-}"
+  if [[ -z $combo ]]; then
+    _fail "every pace note maps to a combo" "a combo for '$note'" "none"
+    break
+  fi
+  # Miss exactly one on purpose: an off is what exercises the downshift, the
+  # teaching line, and the within-stage requeue.
+  if ((answered == 1 && wrong_sent == 0)); then
+    wrong_sent=1
+    hyprctl eval "_G.omashift_on_answer('SUPER + SHIFT + ESCAPE')" >/dev/null 2>&1
+    hyprctl eval "_G.omashift_on_answer('$combo')" >/dev/null 2>&1
+  else
+    hyprctl eval "_G.omashift_on_answer('$combo')" >/dev/null 2>&1
+  fi
+  answered=$((answered + 1))
+  sleep 0.6
+  # The ghost split shows on the result screen, between answer and next prompt.
+  screen | grep -qE 'NEW BEST|ghost [0-9]+ms' && saw_ghost=1
+  sleep 0.8   # clear the rest of the 900ms settle plus the repaint
+done
+
+wait_for 'STAGE COMPLETE' 20 && _pass "the stage reaches a summary" \
+  || _fail "the stage reaches a summary" "STAGE COMPLETE" "$(screen | head -6)"
+
+summary=$(screen)
+grep -q "correct" <<<"$summary" && _pass "the summary reports a score" \
+  || _fail "the summary reports a score" "a correct line" "$summary"
+
+assert_eq "the ghost split showed during play" 1 "$saw_ghost"
+grep -q "vs ghost" <<<"$summary" && _pass "the summary carries a ghost line" \
+  || _fail "the summary carries a ghost line" "a vs ghost line" "$summary"
+# The seed is 9000ms per note; the harness answers in about a second, so every
+# ghosted note must come back ahead. A positive total would mean the delta is
+# being computed against the wrong baseline.
+# Gaps read in SECONDS now, not milliseconds. That is the racing idiom, and the only
+# time left anywhere on the screens.
+grep -qE "vs ghost +-[0-9.]+s" <<<"$summary" && _pass "the stage came in under its ghost" \
+  || _fail "the stage came in under its ghost" "a negative vs ghost gap in seconds" "$summary"
+grep -qE "[0-9]+ ms|[0-9]+ms" <<<"$summary" \
+  && _fail "no millisecond readout survives to the screen" "km/h and seconds" "$summary" \
+  || _pass "no millisecond readout survives to the screen"
+
+# --- the hand-back, which is the safety-critical part ------------------------
+sleep 1
+after=$(hyprctl submap)
+assert_eq "completing a stage releases the keyboard" "default" "$after"
+
+grep -q "your keys are back" <<<"$(screen)" && _pass "the summary says the keys are back" \
+  || _fail "the summary says the keys are back" "the hand-back line" "$(screen | tail -3)"
+
+# --- persistence -------------------------------------------------------------
+if [[ -r "$SMOKE_BASE/history.jsonl" ]]; then
+  _pass "the stage was persisted"
+  rec=$(tail -1 "$SMOKE_BASE/history.jsonl")
+  grep -q '"answers":\[{' <<<"$rec" && _pass "the record carries per-answer detail" \
+    || _fail "the record carries per-answer detail" "an answers array" "$rec"
+  grep -q '"completed":true' <<<"$rec" && _pass "the record is marked completed" \
+    || _fail "the record is marked completed" '"completed":true' "$rec"
+  # The deliberate miss has to survive into the record: an off is the signal
+  # both the scheduler and Blind Spots are built on, so losing it is silent.
+  grep -q '"outcome":"off"' <<<"$rec" && _pass "the deliberate miss was recorded" \
+    || _fail "the deliberate miss was recorded" '"outcome":"off"' "$rec"
+  # The requested mode has to survive launcher -> display -> engine -> stage ->
+  # record. Config being dropped before reaching its consumer is TWO of the four
+  # breakages this harness exists for, and both were invisible to a green suite.
+  grep -q "\"difficulty\":\"$MODE\"" <<<"$rec" && _pass "the requested difficulty reached the record" \
+    || _fail "the requested difficulty reached the record" "\"difficulty\":\"$MODE\"" "$rec"
+  # A miss inside a stage is re-asked while it is still warm. That requeue is
+  # why the stage runs longer than its requested length.
+  prompts=$(sed -n 's/.*"prompts":\([0-9]*\).*/\1/p' <<<"$rec")
+  assert_ge "the miss was re-asked within the stage" $((LENGTH + 1)) "${prompts:-0}"
+  # Blind Spots reads this file back; a record it cannot parse is a silent zero.
+  parsed=$(cd .. && lua -e "
+    package.path='lib/?.lua;'..package.path
+    local core=require('core')
+    local f=io.open('$SMOKE_BASE/history.jsonl'); local t=f:read('*a'); f:close()
+    print(#core.parse_history(t))")
+  assert_ge "core.parse_history can read what the engine wrote" 1 "${parsed:-0}"
+else
+  _fail "the stage was persisted" "a history.jsonl in the smoke base" "absent"
+fi
+
+[[ -r "$SMOKE_BASE/schedule.lua" ]] && _pass "spaced-repetition state was saved" \
+  || _fail "spaced-repetition state was saved" "a schedule.lua" "absent"
+
+# --- the isolation rule ------------------------------------------------------
+REAL_HISTORY_SUM_AFTER=$(md5sum "$REAL_HISTORY" 2>/dev/null | cut -d' ' -f1 || echo none)
+assert_eq "the real history was NOT touched" "$REAL_HISTORY_SUM_BEFORE" "$REAL_HISTORY_SUM_AFTER"
+REAL_CABINET_SUM_AFTER=$(md5sum "$REAL_CABINET" 2>/dev/null | cut -d' ' -f1 || echo none)
+assert_eq "the real cabinet was NOT touched" "$REAL_CABINET_SUM_BEFORE" "$REAL_CABINET_SUM_AFTER"
+
+# Trophies are earned from a real stage, so this is where they are checked.
+if [[ -r "$SMOKE_BASE/state/omashift/trophies.json" ]]; then
+  _pass "the cabinet was written"
+  grep -q '"earned"' "$SMOKE_BASE/state/omashift/trophies.json" \
+    && _pass "the cabinet records what was earned" \
+    || _fail "the cabinet records what was earned" '"earned"' "$(cat "$SMOKE_BASE/state/omashift/trophies.json")"
+  grep -qE "TROPHY" <<<"$summary" && _pass "a first earn is announced on the summary" \
+    || _fail "a first earn is announced on the summary" "a TROPHY line" "$summary"
+else
+  _fail "the cabinet was written" "a trophies.json in the smoke state dir" "absent"
+fi
+
+[[ -n ${OMASHIFT_SMOKE_SHOW:-} ]] && { echo; echo "--- the results page ---"; screen; }
+
+# --- the structured state QML will read -------------------------------------
+if [[ -r $SMOKE_JSON ]]; then
+  _pass "the engine publishes structured state"
+  python3 - "$SMOKE_JSON" <<'JSONCHECK'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("screen") == "results", d.get("screen")
+s = d["summary"]
+assert isinstance(s["correct"], int) and isinstance(s["prompts"], int)
+assert isinstance(d["notes"], list) and len(d["notes"]) >= 1
+assert isinstance(d["ladder"], list) and len(d["ladder"]) == 5
+assert all("speed_kmh" in n for n in d["notes"])
+assert any(n["outcome"] == "off" for n in d["notes"]), "the deliberate miss"
+assert d["stage"]["difficulty"] == "hard", d["stage"]["difficulty"]
+JSONCHECK
+  if [[ $? -eq 0 ]]; then
+    _pass "the state document is valid JSON with the expected shape"
+  else
+    _fail "the state document is valid JSON with the expected shape" "a results document" "$(head -c 300 "$SMOKE_JSON")"
+  fi
+else
+  _fail "the engine publishes structured state" "a state.json" "absent"
+fi
+
+# --- the overlay actually LOADS -------------------------------------------
+#
+# The one thing no grep and no linter can tell you.
+#
+# `dismissal: dismissal` shipped with the id shadowing the property it was
+# assigned to, so every surface received `undefined` and every read of it threw
+# at runtime. qmllint was clean. Five fault injections passed. Six wiring
+# assertions passed. The feature was completely broken, and the only thing that
+# found it was starting the shell and reading the log.
+#
+# QML is evaluated lazily and reports its failures as warnings on stderr rather
+# than a non-zero exit, so a surface can be fully broken while the process looks
+# perfectly healthy. That is why this greps the log instead of trusting the exit.
+if command -v quickshell >/dev/null 2>&1; then
+  QML_CHECK_LOG="$SMOKE_BASE/qml-check.log"
+  # Plain relative: this script cd's into test/ at the top, so a dirname of $0
+  # resolves to ./test/.. and misses. The "starts" assertion above caught that,
+  # which is the point of checking BOTH that it runs and that it logged nothing:
+  # the error grep passed happily while the shell had never loaded at all.
+  setsid quickshell -p ../qml/shell.qml >"$QML_CHECK_LOG" 2>&1 &
+  qml_check_pid=$!
+  sleep 3
+
+  if kill -0 "$qml_check_pid" 2>/dev/null; then
+    _pass "the overlay starts"
+  else
+    _fail "the overlay starts" "a running quickshell" "it exited: $(tail -3 "$QML_CHECK_LOG")"
+  fi
+
+  # `grep -c` PRINTS the count and EXITS 1 when it is zero, so `|| echo 0`
+  # appends a second zero and the whole thing becomes "0\n0". Swallow the exit
+  # status instead; the printed count is already correct.
+  qml_errs=$(grep -icE "TypeError|ReferenceError|Cannot read property|is not defined|Unable to assign" \
+    "$QML_CHECK_LOG" 2>/dev/null) || true
+  qml_errs=${qml_errs:-0}
+  assert_eq "the overlay loads with no runtime errors" 0 "$qml_errs"
+  (( qml_errs )) && grep -iE "TypeError|ReferenceError|Cannot read property|is not defined|Unable to assign" \
+    "$QML_CHECK_LOG" | head -5
+
+  kill "$qml_check_pid" 2>/dev/null || true
+  sleep 0.3
+  kill -9 "$qml_check_pid" 2>/dev/null || true
+else
+  echo "  (skipped the overlay check: quickshell not installed)"
+fi
+
+[[ -n ${OMASHIFT_SMOKE_SHOW:-} ]] && { echo; echo "--- state.json ---"; python3 -m json.tool "$SMOKE_JSON" 2>/dev/null | head -40; }
+
+suite_summary "smoke"

@@ -1,0 +1,27 @@
+OMASHIFT · STAGE COMPLETE
+
+  correct   3 / 3                    points     425
+  offs      0                        clean      yes, Direct Drive
+  avg speed 180 km/h                 top speed  250 km/h
+  vs ghost  none yet. play a stage without the co-driver
+  TROPHY    Zero Latency  (bronze)
+  TROPHY    Fast Off The Blocks  (bronze)
+  TROPHY    Conversion Rate: 100%
+  TROPHY    Getting Real
+  TROPHY    Direct Drive
+  TROPHY    Open Sesame
+  TROPHY    Omakase
+
+  LADDER                               SPLITS
+    zero-latency   2  67% #######        Windows     158 km/h  2/2
+    on-rails       0   0%                System      250 km/h  1/1
+    clean          0   0%
+    steady         1  33% ###
+    slow           0   0%
+
+  NOTES
+     ok 115 km/h  Full screen
+     ok 250 km/h  Close window
+     ok 250 km/h  Omarchy menu
+
+  ENTER goes again  ·  ESC back to the menu  ·  P saves a picture

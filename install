@@ -1,0 +1,168 @@
+#!/bin/bash
+# Put Omashift on your PATH, and say the one line you have to add yourself.
+#
+#   ./install              link the commands, check the dependencies
+#   ./install --uninstall  remove the links
+#
+# WHAT THIS DOES NOT DO
+#
+# It does not edit your Hyprland config. Not because that would be hard, but
+# because a game that writes to the file your whole desktop is defined in has to
+# be trusted differently from one that does not, and this one does not need to
+# be. The consequence is worth the one manual step: `hyprctl reload` plus
+# deleting this directory is a complete uninstall, with nothing left behind to
+# find later.
+#
+# Symlinks rather than copies, so `git pull` is the whole upgrade.
+
+set -uo pipefail
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+BIN="${XDG_BIN_HOME:-$HOME/.local/bin}"
+
+# The commands a player runs. The others in bin/ are called by these and are
+# deliberately not on PATH: fewer things to explain, fewer things to collide.
+COMMANDS=(omashift omashift-cabinet omashift-stats)
+
+# THE APP LISTING READS .desktop FILES, and there was not one, so Omashift did
+# not appear anywhere in Omarchy's menu. The launch chord is the fast way in;
+# this is how anybody FINDS it, including whoever installed it and forgot which
+# chord they picked.
+#
+# Written by the installer rather than shipped, because Exec has to be an
+# absolute path: ~/.local/bin is not reliably on the PATH of a desktop session,
+# and a launcher entry that silently does nothing is worse than no entry.
+DESKTOP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+DESKTOP="$DESKTOP_DIR/omashift.desktop"
+
+bold() { printf '\033[1m%s\033[0m\n' "$1"; }
+warn() { printf '\033[33m%s\033[0m\n' "$1" >&2; }
+fail() { printf '\033[31m%s\033[0m\n' "$1" >&2; }
+
+if [[ ${1:-} == "--uninstall" ]]; then
+  removed=0
+  for cmd in "${COMMANDS[@]}"; do
+    target="$BIN/$cmd"
+    # Only ever remove OUR link. Someone else's binary with the same name is
+    # not ours to delete, and a copy rather than a link means a human put it
+    # there on purpose.
+    if [[ -L $target && $(readlink -f "$target") == "$HERE/bin/$cmd" ]]; then
+      rm -f "$target" && removed=$((removed + 1))
+    elif [[ -e $target ]]; then
+      warn "left $target alone: it is not a link into this checkout"
+    fi
+  done
+  # Only ours, identified by the Exec pointing into this checkout.
+  if [[ -f $DESKTOP ]] && grep -qF "Exec=$HERE/bin/omashift" "$DESKTOP"; then
+    rm -f "$DESKTOP" && echo "removed $DESKTOP"
+  elif [[ -e $DESKTOP ]]; then
+    warn "left $DESKTOP alone: it does not point into this checkout"
+  fi
+
+  echo "removed $removed of ${#COMMANDS[@]} links from $BIN"
+  echo
+  echo "Still to do by hand, if you added them:"
+  echo "  - the o.bind line in your Hyprland Lua config"
+  echo "  - hyprctl reload"
+  echo "  - rm -rf ~/.local/share/omashift ~/.local/state/omashift ~/.config/omashift"
+  exit 0
+fi
+
+bold "Omashift"
+echo
+
+# --- dependencies -----------------------------------------------------------
+#
+# Checked, named, and NOT installed for you. Guessing someone's package manager
+# is how an installer ends up doing something they did not agree to.
+missing=0
+check() {
+  if command -v "$1" >/dev/null 2>&1; then
+    printf '  \033[32m✓\033[0m %-12s %s\n' "$1" "$2"
+  else
+    printf '  \033[31m✗\033[0m %-12s %s\n' "$1" "$2"
+    missing=$((missing + 1))
+  fi
+}
+check hyprctl   "Hyprland, with the Lua config enabled"
+check lua       "the engine (5.4)"
+check quickshell "draws the game"
+# READS YOUR KEYMAP, on every single launch. Without it there is no question
+# bank and the game cannot start at all. It was not checked here for a
+# two weeks, because it is present on every machine this has ever run on.
+check jq        "reads your keybindings into the question bank"
+
+if (( missing )); then
+  echo
+  fail "$missing missing. Omashift needs all four."
+  echo "On Omarchy all of them are already present, which is the machine this is aimed at."
+  exit 1
+fi
+
+# Wanted rather than needed, so it is reported and not fatal: the game plays
+# without it, and only the terminal report and `omashift --restore` do not.
+if ! command -v python3 >/dev/null 2>&1; then
+  warn "  python3 is missing. The game will play; 'omashift-stats' and"
+  warn "  'omashift --restore' will not."
+fi
+
+# The Lua config is a separate question from having hyprctl: a machine can run
+# Hyprland with no Lua at all, and the game is built entirely on that API.
+if ! hyprctl eval "return 1" >/dev/null 2>&1; then
+  echo
+  fail "hyprctl eval did not work, so Hyprland's Lua config is not available."
+  echo "Omashift is built on it and cannot run without it."
+  exit 1
+fi
+
+echo
+mkdir -p "$BIN" || { fail "could not create $BIN"; exit 1; }
+
+for cmd in "${COMMANDS[@]}"; do
+  src="$HERE/bin/$cmd"
+  target="$BIN/$cmd"
+  [[ -x $src ]] || { fail "missing $src"; exit 1; }
+  if [[ -e $target && ! -L $target ]]; then
+    fail "$target exists and is not a symlink. Move it and run this again."
+    exit 1
+  fi
+  ln -sfn "$src" "$target"
+  printf '  linked  %s\n' "$target"
+done
+
+# --- the app listing --------------------------------------------------------
+if mkdir -p "$DESKTOP_DIR" 2>/dev/null; then
+  cat > "$DESKTOP" <<DESKTOP_ENTRY
+[Desktop Entry]
+Type=Application
+Name=Omashift
+GenericName=Keybinding trainer
+Comment=A rally game that helps you make the shift to Omarchy
+Exec=$HERE/bin/omashift
+Icon=$HERE/assets/omashift-icon.svg
+Terminal=false
+Categories=Game;
+Keywords=keyboard;shortcuts;keybindings;practice;rally;
+StartupNotify=false
+DESKTOP_ENTRY
+  printf '  listed   %s\n' "$DESKTOP"
+else
+  warn "  could not write $DESKTOP, so it will not appear in the app menu"
+fi
+
+echo
+case ":$PATH:" in
+  *":$BIN:"*) ;;
+  *) warn "  $BIN is not on your PATH. Add it, or the commands above will not be found." ;;
+esac
+
+bold "One line left, and it is yours to add:"
+cat <<'BIND'
+
+  # in ~/.config/hypr/bindings.lua
+  o.bind("SUPER + ALT + O", "Omashift", "omashift")
+
+BIND
+echo "Then: hyprctl reload"
+echo
+echo "That binding is the only change to your system. Removing it and running"
+echo "./install --uninstall puts everything back."
