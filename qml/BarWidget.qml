@@ -50,10 +50,25 @@ BarWidget {
     // The same file the game's own display reads, and for the same reason: it
     // is the entire interface between the engine and anything that draws. See
     // StateReader.qml.
+    // AND THE BOUNDARY MATTERS MORE HERE THAN ANYWHERE. This is the one file
+    // somebody else's long-lived shell process loads, so a document fed to this
+    // reader is a document fed to the bar, the notifications and the lock
+    // screen. It used to be /tmp/omashift-state.json, which any local process
+    // could predict and replace; $XDG_RUNTIME_DIR is 0700 and per user, so
+    // there is no longer anybody who can. See lib/runtime.lua.
     readonly property string statePath: {
         const env = Quickshell.env("OMASHIFT_STATE_JSON");
-        return (env && env.length > 0) ? env : "/tmp/omashift-state.json";
+        if (env && env.length > 0)
+            return env;
+        const run = Quickshell.env("XDG_RUNTIME_DIR");
+        return (run && run.length > 0)
+            ? run + "/omashift/state.json"
+            : "";
     }
+
+    /// The most a screen is ever allowed to be. FileView cannot stat, so this
+    /// is the one check a reader can make for itself. See StateReader.qml.
+    readonly property int maxStateBytes: 262144
 
     /// Which screen the game is on, or "" for nothing running.
     property string view: ""
@@ -116,7 +131,13 @@ BarWidget {
             // a moment. Keeping the last good screen is better than blinking
             // the tooltip back to "not running" on every repaint.
             try {
-                const doc = JSON.parse(text());
+                const raw = text();
+                // Refused rather than parsed, and the last good screen kept.
+                // This handler only tunes a tooltip and a tint, so there is
+                // nothing here worth spending the host's memory on.
+                if (raw.length > root.maxStateBytes)
+                    return;
+                const doc = JSON.parse(raw);
                 root.view = doc && doc.screen ? String(doc.screen) : "";
             } catch (e) {
             }

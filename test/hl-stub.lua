@@ -51,6 +51,20 @@ local function mkdirp(path) os.execute(("mkdir -p %q"):format(path)) end
 -- counter is what actually keeps them apart.
 local box_seq = 0
 
+-- An unpredictable, 0700 sandbox root.
+--
+-- These used to be built at /tmp/omashift-test-<name>-<time>-<seq>, which any
+-- local process could guess and pre-place. Nothing secret is staged into a
+-- sandbox, but a suite that a stranger runs on a shared machine should not be
+-- the one predictable path left in the tree after the security review.
+local function mktempd(name)
+  local p = io.popen(("mktemp -d -t %s.XXXXXXXX 2>/dev/null"):format(name))
+  if not p then return nil end
+  local dir = p:read("*l")
+  p:close()
+  return (dir and #dir > 0) and dir or nil
+end
+
 local function read(path)
   local f = io.open(path, "r")
   if not f then return nil end
@@ -64,12 +78,12 @@ end
 function M.sandbox(name)
   local here = (arg[0]:match("(.*/)") or "./")
   box_seq = box_seq + 1
-  local root = ("/tmp/omashift-test-%s-%d-%d"):format(name, os.time(), box_seq)
-  rmrf(root)
+  local root = mktempd(("omashift-test-%s-%d"):format(name, box_seq))
+  assert(root, "could not create a sandbox directory")
   mkdirp(root .. "/lib")
   mkdirp(root .. "/state/omashift")
 
-  for _, f in ipairs({ "core.lua", "trophies.lua", "screens.lua" }) do
+  for _, f in ipairs({ "core.lua", "trophies.lua", "screens.lua", "runtime.lua" }) do
     os.execute(("cp %q %q"):format(here .. "../lib/" .. f, root .. "/lib/" .. f))
   end
   -- Generated from the committed keybindings fixture, never from the machine

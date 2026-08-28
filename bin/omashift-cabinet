@@ -41,7 +41,10 @@ WHY=0
 # would tear down the thing that asked. Publishing is enough; the running
 # overlay is watching the file.
 if [[ ${1:-} == "--visual" || ${1:-} == "--publish" ]]; then
-  STATE_JSON="${OMASHIFT_STATE_JSON:-/tmp/omashift-state.json}"
+  # shellcheck source=../lib/runtime.sh
+  . "$HERE/lib/runtime.sh"
+  STATE_JSON=$(omashift_runtime_path OMASHIFT_STATE_JSON state.json) || {
+    echo "omashift-cabinet: no private runtime directory" >&2; exit 1; }
   QML_DIR="$HERE/qml"
 
   lua - "$HERE" "$CABINET" "$STATE_JSON" <<'VISUAL' || { echo "could not build the cabinet" >&2; exit 1; }
@@ -57,7 +60,7 @@ if f then f:close() end
 local courses = {}
 for _, name in ipairs(core.course_names()) do courses[#courses + 1] = name end
 
-local out = assert(io.open(arg[3], "w"))
+local runtime = require("runtime")
 local scene = require("scene")
 local model = C.model(saved, courses)
 -- The same backdrop the game opens on. These screens dim the whole
@@ -68,8 +71,11 @@ model.scene = scene.resolve(core.DEFAULT_SCENE, 0)
 -- any game's trophy case does. Opened on its own from a terminal there is
 -- nothing to go back to, so it leaves.
 model.back = os.getenv("OMASHIFT_CABINET_BACK")
-out:write(core.to_json(model), "\n")
-out:close()
+-- Staged through an unguessable name and renamed into place, the same as every
+-- other write to this file. See lib/runtime.lua.
+if not runtime.write_atomic(arg[3], core.to_json(model) .. "\n") then
+  os.exit(1)
+end
 VISUAL
 
   # Publishing is the whole job when something else owns the overlay.

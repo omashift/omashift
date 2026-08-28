@@ -569,7 +569,15 @@ has_in "and builds one model"                  "$ST" "local model = stats.model(
 has_in "and serialises it the same way"        "$ST" "core.to_json(model)"
 # Written through a temp file and renamed. The overlay watches this path, and a
 # reader that catches a half-written document draws a broken screen.
-has_in "the write is atomic"                   "$ST" "os.rename(tmp, arg[3])"
+#
+# THROUGH THE SHARED WRITER, not a second copy of it. This file used to stage
+# through a fixed <path>.tmp of its own, which is the symlink hazard the
+# marketplace security review found in the engine, sitting here unnoticed
+# because nobody thought to look for the pattern twice.
+has_in "the write is atomic"                   "$ST" "runtime.write_atomic(arg[3]"
+has_in "and does not hand roll a temp name"    "$ST" 'require("runtime")'
+assert_eq "no fixed temp sibling in the logbook" 0 \
+  "$(code_count "$ST" '.. ".tmp"')"
 # The deep read stays in the terminal. This is the line that stops the visual
 # screen from quietly becoming the only one and taking blind spots with it.
 has_in "the terminal report survives"          "$ST" "blind spots"
@@ -950,9 +958,13 @@ fi
 # and was not on the list, so the engine loaded, hit require("scene") and died,
 # and because the launcher is normally run from a keybinding the error went to a
 # stderr nobody was reading. The symptom was a key that did nothing.
-has_in "the launcher stages the whole library" "$L" 'cp "$HERE"/lib/*.lua'
+#
+# The glob widened from *.lua to * when lib/runtime.sh arrived: the guard is
+# sourced from the staged copy at $BASE, so a Lua-only glob left it behind in
+# exactly the layout where nothing could fall back to the repo.
+has_in "the launcher stages the whole library" "$L" 'cp "$HERE"/lib/*'
 assert_eq "and does not name files one at a time" 0 \
-  "$(grep -cE 'cp "\$HERE/lib/[a-z]+\.lua"' "$L")"
+  "$(grep -cE 'cp "\$HERE/lib/[a-z-]+\.(lua|sh)"' "$L")"
 
 # And the check that would have caught it whatever the staging looked like:
 # every module anything in lib/ asks for has to be a file in lib/. inventory.lua
@@ -1173,11 +1185,36 @@ has_in "the scrim comes from the scene"    "$Q" "surface.scene ? surface.scene.s
 # down as a hazard during the render/publish merge and dismissed as moot because
 # the display read text, which was wrong even then: the overlay has always parsed
 # JSON. It surfaced when menu keys started depending on the parsed screen.
-has "screens are written atomically"   "local function write_atomic(path, text)"
-has "and renamed into place"           "os.rename(tmp, path)"
+#
+# AND THE STAGED NAME IS UNGUESSABLE. It used to be a fixed <path>.tmp sibling
+# in a world writable directory, so anyone could plant a symlink there and have
+# the engine truncate a file of the player's through it. That is what the
+# marketplace security review called release blocking. The write lives in
+# lib/runtime.lua now, and these assert the engine still goes through it.
+has "screens are written atomically"   "local write_atomic = runtime.write_atomic"
+has "and the writer is the shared one" 'local runtime = dofile(BASE .. "/lib/runtime.lua")'
 assert_eq "nothing writes the state file in place" 0 \
   "$(code_count "$E" 'io.open(STATE_JSON, "w")')"
 assert_eq "nor the text screen"        0 "$(code_count "$E" 'io.open(STATE, "w")')"
+assert_eq "and no fixed temp sibling survives" 0 \
+  "$(code_count "$E" 'path .. ".tmp"')"
+
+# NONE OF IT IS IN /tmp ANY MORE, which is the other half of the same review.
+# A predictable path in a world writable directory is what made the readers
+# attackable at all; $XDG_RUNTIME_DIR is 0700 and per user.
+#
+# code_count, not grep: the comments explaining why the path moved have to be
+# allowed to name the path it moved from, or the history goes unwritten to
+# satisfy its own assertion.
+for f in "$E" "$L" "$ST" ../bin/omashift-cabinet ../bin/omashift-guide-guard \
+         ../qml/StateReader.qml ../qml/BarWidget.qml; do
+  assert_eq "no /tmp default in $(basename "$f")" 0 \
+    "$(code_count "$f" '/tmp/omashift')"
+done
+has_in "the launcher resolves state through the helper" "$L" \
+  'omashift_runtime_path OMASHIFT_STATE_JSON state.json'
+has_in "and refuses when the directory fails its checks" "$L" \
+  'no private runtime directory'
 
 # THE CLOCK COMES FROM WHOEVER OWNS THE TIMERS.
 #
