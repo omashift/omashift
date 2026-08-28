@@ -160,6 +160,25 @@ for forbidden in Surface StateReader Theme Wordmark Cabinet Stats; do
     "$(sed -e 's,//.*,,' "$W" | grep -cF -- "$forbidden {")"
 done
 
+# AND IT READS NOTHING AT ALL, which is the answer to the second security
+# review. A 0700 runtime directory shuts out another USER and not another
+# process of yours, and no file check closes that gap: an attacker running as
+# you owns their file, so an owner test passes. The widget used to watch the
+# engine's state document to tint the mark. It does not any more, and the
+# process that owns the bar now consumes nothing anybody can write.
+#
+# Asserted on the code with comments stripped, so the paragraph explaining the
+# decision cannot satisfy the assertion that enforces it.
+widget_code=$(sed -e 's,//.*,,' "$W")
+for banned in FileView "Quickshell.Io" "Quickshell.env" statePath; do
+  assert_eq "the widget does no IO: no $banned" 0 \
+    "$(grep -cF -- "$banned" <<<"$widget_code")"
+done
+# The clicks never depended on it, which is why dropping the read cost no
+# behavior. Both are still unconditional and still both present.
+has_in "the left click still opens the game"   "$W" 'root.launch([root.launcher])'
+has_in "the right click still retires a stage" "$W" '"--stop"'
+
 # --- what a marketplace listing needs -------------------------------------
 #
 # The marketplace checklist is five statements you attest to by hand, and two of

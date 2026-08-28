@@ -46,6 +46,27 @@ QtObject {
     /// its own. A state document is a screen; anything near this cap is not one.
     readonly property int maxStateBytes: 262144
 
+    /// Every screen the engine can publish, and nothing else is accepted.
+    ///
+    /// THE DIRECTORY STOPS ANOTHER USER, NOT ANOTHER PROCESS OF YOURS. A 0700
+    /// runtime directory is closed to everybody but you, and open to every
+    /// process running as you. No file check closes that: their file is owned
+    /// by you, so an owner test passes, and any nonce we could sign with is
+    /// readable by them too.
+    ///
+    /// So this reader stops trying to prove who wrote the document and bounds
+    /// what an unexpected one can do instead. A document naming a screen the
+    /// engine cannot produce is dropped whole, which also keeps its other
+    /// fields from reaching anything downstream.
+    ///
+    /// The bar widget answered the same question by not reading at all, which
+    /// it could afford and this cannot: this IS the display. It runs in the
+    /// game's own process, so the worst case here is a frame, not the bar.
+    readonly property var knownScreens: [
+        "loaded", "ready", "countdown", "prompt", "result", "results",
+        "released", "cabinet", "stats", "empty_course"
+    ]
+
     /// How long the opening frame stays up, at minimum.
     ///
     /// IT USED TO BE AN ACCIDENT. The loading frame was on screen for exactly as
@@ -123,9 +144,14 @@ QtObject {
                 if (raw.length > root.maxStateBytes)
                     return;
                 const next = JSON.parse(raw);
-                if (next && typeof next === "object") {
-                    root._accept(next);
-                }
+                if (!next || typeof next !== "object" || Array.isArray(next))
+                    return;
+                // Dropped WHOLE on an unknown screen, not blanked: a document
+                // this reader does not recognize should not get to set any
+                // field, and blanking would hide the overlay on a half write.
+                if (root.knownScreens.indexOf(String(next.screen || "")) < 0)
+                    return;
+                root._accept(next);
             } catch (e) {
                 // Deliberately silent. The next write will be complete.
             }

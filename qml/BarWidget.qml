@@ -25,9 +25,9 @@
 // note, so there is no route to a terminal from the keyboard, and the pointer
 // is the only way back in. This widget is that route.
 
+// Quickshell.Io is deliberately absent. This widget performs no IO, and the
+// import that would let it is the one worth not having.
 import QtQuick
-import Quickshell
-import Quickshell.Io
 import qs.Ui
 import qs.Commons
 
@@ -47,37 +47,28 @@ BarWidget {
     readonly property string launcher:
         Qt.resolvedUrl("../bin/omashift").toString().replace(/^file:\/\//, "")
 
-    // The same file the game's own display reads, and for the same reason: it
-    // is the entire interface between the engine and anything that draws. See
+    // THIS WIDGET READS NOTHING. That is the point, and it cost a feature.
+    //
+    // It used to watch the engine's state document to tint the mark and word
+    // the tooltip. The marketplace security review objected, and the second
+    // pass named the part that actually matters: moving the file to a 0700
+    // directory stops another USER, and stops nothing else. Every process
+    // running as you, this shell's other plugins included, can still write it.
+    //
+    // No file check fixes that. A same user attacker's file is owned by you,
+    // so an owner test passes; they can read any nonce we could sign with, and
+    // ptrace the shell besides. The honest options were to bound the damage or
+    // to stop taking the input, and this is the one file of ours that somebody
+    // else's long-lived process loads. So it stops taking the input.
+    //
+    // WHAT THIS COSTS: the mark no longer lights while a stage is running, and
+    // the tooltip no longer knows whether one is. WHAT IT DOES NOT COST: the
+    // clicks, which never consulted the file. Both were always unconditional,
+    // for a reason documented below that predates any of this.
+    //
+    // The game's own overlay still reads the document, in the game's own
+    // process, where a hostile write costs a frame instead of the bar. See
     // StateReader.qml.
-    // AND THE BOUNDARY MATTERS MORE HERE THAN ANYWHERE. This is the one file
-    // somebody else's long-lived shell process loads, so a document fed to this
-    // reader is a document fed to the bar, the notifications and the lock
-    // screen. It used to be /tmp/omashift-state.json, which any local process
-    // could predict and replace; $XDG_RUNTIME_DIR is 0700 and per user, so
-    // there is no longer anybody who can. See lib/runtime.lua.
-    readonly property string statePath: {
-        const env = Quickshell.env("OMASHIFT_STATE_JSON");
-        if (env && env.length > 0)
-            return env;
-        const run = Quickshell.env("XDG_RUNTIME_DIR");
-        return (run && run.length > 0)
-            ? run + "/omashift/state.json"
-            : "";
-    }
-
-    /// The most a screen is ever allowed to be. FileView cannot stat, so this
-    /// is the one check a reader can make for itself. See StateReader.qml.
-    readonly property int maxStateBytes: 262144
-
-    /// Which screen the game is on, or "" for nothing running.
-    property string view: ""
-
-    /// The screens on which the submap is engaged and the keyboard is not
-    /// yours. The end screens and the menu are not in here: by the time they
-    /// are drawn the submap has already been reset.
-    readonly property bool playing:
-        view === "countdown" || view === "prompt" || view === "result"
 
     implicitWidth: button.implicitWidth
     implicitHeight: button.implicitHeight
@@ -110,51 +101,32 @@ BarWidget {
         Util.execArgv(argv);
     }
 
-    // WHAT THE CLICKS DO IS NOT READ OFF THIS FILE. The state file outlives the
-    // game on purpose: an end screen lingers until the next launch, so a
-    // present file is not proof of a running stage. Deciding between "start"
-    // and "stop" from it would send a click to the wrong action every time
-    // somebody dismissed a results page.
+    // WHAT THE CLICKS DO WAS NEVER READ OFF THE STATE FILE, which is why
+    // dropping the read costs no behavior. The document outlives the game on
+    // purpose: an end screen lingers until the next launch, so a present file
+    // was never proof of a running stage. Deciding between "start" and "stop"
+    // from it would have sent a click to the wrong action every time somebody
+    // dismissed a results page.
     //
-    // Both buttons are therefore unconditional, and both are safe from every
-    // state: the left click arms and repairs, the right click retires. This
-    // file only ever tunes the tooltip and the tint, where being a screen
-    // behind costs nothing.
-    FileView {
-        path: root.statePath
-        watchChanges: true
-        printErrors: false
-        onFileChanged: reload()
-        onLoadFailed: root.view = ""
-        onLoaded: {
-            // A half written document is a document that will be rewritten in
-            // a moment. Keeping the last good screen is better than blinking
-            // the tooltip back to "not running" on every repaint.
-            try {
-                const raw = text();
-                // Refused rather than parsed, and the last good screen kept.
-                // This handler only tunes a tooltip and a tint, so there is
-                // nothing here worth spending the host's memory on.
-                if (raw.length > root.maxStateBytes)
-                    return;
-                const doc = JSON.parse(raw);
-                root.view = doc && doc.screen ? String(doc.screen) : "";
-            } catch (e) {
-            }
-        }
-    }
+    // Both buttons are unconditional, and both are safe from every state: the
+    // left click arms and repairs, the right click retires. That property is
+    // what makes a widget with no state at all a complete one.
 
     BarIconButton {
         id: button
         anchors.fill: parent
         bar: root.bar
-        active: root.playing
 
-        tooltipText: root.playing
-            ? "Omashift has your keyboard. Right click to retire the stage."
-            : (root.view.length > 0
-                ? "Omashift is open. Right click to close it."
-                : "Omashift. Left click to open it.")
+        // Nothing lights it, because nothing here knows what the game is
+        // doing any more. The alternative was to keep taking a document that
+        // any process running as you can write, into the process that owns
+        // the bar, for a tint.
+        active: false
+
+        // One wording for every state, and it has to be true in all of them.
+        // Both halves always work: the left click opens the game or repairs a
+        // stranded stage, the right click retires one.
+        tooltipText: "Omashift. Left click to open it, right click to retire a stage."
 
         onPressed: function (buttonCode) {
             if (buttonCode === Qt.RightButton) {
