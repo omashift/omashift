@@ -213,8 +213,20 @@ sleep 1
 after=$(hyprctl submap)
 assert_eq "completing a stage releases the keyboard" "default" "$after"
 
-grep -q "your keys are back" <<<"$(screen)" && _pass "the summary says the keys are back" \
-  || _fail "the summary says the keys are back" "the hand-back line" "$(screen | tail -3)"
+# NOT "your keys are back", which is what this asserted from the first commit
+# and never once passed: lib/screens.lua has never carried that line.
+#
+# The footer used to say it, and it was FALSE while the overlay held exclusive
+# focus, along with the SUPER+ALT+O it pointed at. Both were removed, and
+# test-wiring.sh now asserts the overlay never claims it. This assertion was
+# left behind pointing at the old wording, and because smoke is not part of
+# test/all nothing made it say so.
+#
+# The safety-critical half is the line above: the submap is actually released.
+# This is the other half, that the screen names a key which really works.
+grep -q "ESC back to the menu" <<<"$(screen)" \
+  && _pass "the summary names the key that works" \
+  || _fail "the summary names the key that works" "ESC back to the menu" "$(screen | tail -3)"
 
 # --- persistence -------------------------------------------------------------
 if [[ -r "$SMOKE_BASE/history.jsonl" ]]; then
