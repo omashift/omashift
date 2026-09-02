@@ -1015,6 +1015,20 @@ local function countdown(n, then_fn)
 end
 
 function _G.omashift_start(opts)
+  -- Ignore a start while a stage is already live.
+  --
+  -- ENTER on the ready screen is not one process per press, it is one process
+  -- PER PRESS DELIVERED, and `fire_if_armed` in bin/omashift does not disarm
+  -- until after it has polled for the countdown, which takes up to 3s. A held
+  -- key or an impatient second press in that window is a second, independent
+  -- `hyprctl eval` reaching this exact function while the first stage's
+  -- countdown is still ticking. Without this guard, that call overwrites the
+  -- one shared `stage` upvalue and starts a second `countdown()` chain racing
+  -- the first, and both eventually call `advance()` on whatever `stage` is by
+  -- then -- which is how a stage was seen blazing through every pace note with
+  -- no pause for an answer. Three overlapping bursts of this, all from one
+  -- afternoon's play, are in launch.log.
+  if stage and not stage.finished then return end
   opts = opts or {}
   -- Per-launch, alongside the co-driver thresholds. Read before anything can
   -- arm a watch, so a stage never runs under the previous launch's value.

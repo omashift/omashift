@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.omashift.omashift",
   "name": "Omashift",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "John Trainor",
   "license": "MIT",
   "description": "A rally game that drills your Omarchy keybindings. The bar widget opens it, and retires a stage that is still holding your keyboard.",

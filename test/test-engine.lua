@@ -202,6 +202,43 @@ do
   box:remove()
 end
 
+-- --- REGRESSION: a second start while a stage is live must be ignored -------
+-- ENTER held down, or pressed again because the countdown had not appeared on
+-- screen yet, is a second independent process reaching `_G.omashift_start`
+-- while the first stage's countdown is still ticking. Found by playing on one
+-- machine's launch.log: three afternoon bursts of a dozen-odd "started" lines
+-- within a couple of seconds of each other, each one an overlapping
+-- `countdown()` chain racing another over the single shared `stage`, which is
+-- what a countdown speeding through and a whole set of pace notes blazing past
+-- with no pause for an answer turned out to be.
+do
+  local hl, box = boot("restart-guard")
+  start(hl, box, { length = 3 })
+  contains("starting shows the first tick of the countdown", '"n":4', box:model())
+
+  hl.advance(1000)
+  contains("the countdown has ticked down once, on its own", '"n":3', box:model())
+
+  -- A second start, as if a second press had landed on top of the first.
+  start(hl, box, { length = 5 })
+  contains("the second start is ignored: no fresh countdown, no new note count",
+           '"n":3', box:model())
+
+  hl.advance(6000)
+  local asked = {}
+  for _ = 1, 10 do
+    local desc = current_prompt(box)
+    if not desc then break end
+    asked[#asked + 1] = desc
+    _G.omashift_on_answer(combo_for(desc))
+    hl.advance(1500)
+  end
+  eq("the original three-note stage still asks exactly three, never five",
+     3, #asked)
+  eq("and it still reaches the results screen, not a stomped one", "results", box:screen())
+  box:remove()
+end
+
 -- --- REGRESSION: a completed stage must hand the keys back ------------------
 -- Found by playing, not by the suite. The summary rendered while every
 -- keybinding stayed dead and there was nothing left to answer.
